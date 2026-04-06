@@ -916,6 +916,89 @@ class WebServer(private val context: Context) {
                     }
                 }
                 
+                // AI Error Diagnostics endpoint for detailed model loading analysis
+                get("/models/{modelName}/diagnostics") {
+                    try {
+                        val modelName = call.parameters["modelName"] ?: return@get call.respond(
+                            HttpStatusCode.BadRequest,
+                            me.bechberger.phoneserver.ai.AIErrorResponse(
+                                error = "Model name required",
+                                code = "MISSING_PARAMETER",
+                                details = "Model name parameter is required"
+                            )
+                        )
+                        
+                        val model = AIModel.fromString(modelName)
+                        if (model == null) {
+                            call.respond(
+                                HttpStatusCode.NotFound,
+                                me.bechberger.phoneserver.ai.AIErrorResponse(
+                                    error = "Model not found",
+                                    code = "MODEL_NOT_FOUND",
+                                    details = "Model '$modelName' is not supported"
+                                )
+                            )
+                            return@get
+                        }
+                        
+                        // Run comprehensive diagnostics
+                        val diagnostics = AIErrorDiagnostics.diagnoseModelLoadingFailure(
+                            this@WebServer.context,
+                            model
+                        )
+                        
+                        call.respond(mapOf(
+                            "success" to true,
+                            "model" to mapOf(
+                                "name" to model.modelName,
+                                "fileName" to model.fileName,
+                                "format" to model.modelFormat.name,
+                                "supportsVision" to model.supportsVision
+                            ),
+                            "diagnostics" to mapOf(
+                                "modelInfo" to mapOf(
+                                    "fileExists" to diagnostics.modelInfo.fileExists,
+                                    "fileSize" to AIErrorDiagnostics.formatBytes(diagnostics.modelInfo.fileSize),
+                                    "expectedSize" to diagnostics.modelInfo.expectedSize?.let { AIErrorDiagnostics.formatBytes(it) },
+                                    "isComplete" to diagnostics.modelInfo.downloadComplete,
+                                    "isCorrupted" to diagnostics.modelInfo.isCorrupted,
+                                    "filePath" to diagnostics.modelInfo.filePath
+                                ),
+                                "systemInfo" to mapOf(
+                                    "device" to diagnostics.systemInfo.deviceModel,
+                                    "androidVersion" to diagnostics.systemInfo.androidVersion,
+                                    "apiLevel" to diagnostics.systemInfo.apiLevel,
+                                    "abi" to diagnostics.systemInfo.abi,
+                                    "isArm64" to diagnostics.systemInfo.isArm64
+                                ),
+                                "memoryInfo" to mapOf(
+                                    "totalRam" to AIErrorDiagnostics.formatBytes(diagnostics.memoryInfo.totalRam),
+                                    "availableRam" to AIErrorDiagnostics.formatBytes(diagnostics.memoryInfo.availableRam),
+                                    "lowMemory" to diagnostics.memoryInfo.lowMemory,
+                                    "heapSize" to AIErrorDiagnostics.formatBytes(diagnostics.memoryInfo.heapSize)
+                                ),
+                                "storageInfo" to mapOf(
+                                    "total" to AIErrorDiagnostics.formatBytes(diagnostics.storageInfo.internalTotal),
+                                    "free" to AIErrorDiagnostics.formatBytes(diagnostics.storageInfo.internalFree),
+                                    "hasEnoughSpace" to diagnostics.storageInfo.hasEnoughSpace
+                                )
+                            ),
+                            "recommendations" to diagnostics.recommendations,
+                            "quickStatus" to AIErrorDiagnostics.getQuickStatus(this@WebServer.context, model)
+                        ))
+                    } catch (e: Exception) {
+                        Timber.e(e, "Failed to generate AI diagnostics")
+                        call.respond(
+                            HttpStatusCode.InternalServerError,
+                            me.bechberger.phoneserver.ai.AIErrorResponse(
+                                error = "Failed to generate diagnostics",
+                                code = "DIAGNOSTICS_ERROR",
+                                details = e.message
+                            )
+                        )
+                    }
+                }
+                
                 // Object detection endpoint
                 post("/object_detection") {
                     val startTime = System.currentTimeMillis()

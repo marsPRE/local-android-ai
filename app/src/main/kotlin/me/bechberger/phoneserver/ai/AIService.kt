@@ -154,57 +154,66 @@ class AIService(private val context: Context) {
                         // Mark model as failed for future filtering
                         ModelDetector.markModelAsFailed(context, model)
                         
+                        // Run comprehensive diagnostics
+                        val diagnostics = AIErrorDiagnostics.diagnoseModelLoadingFailure(context, model)
+                        
                         // Provide detailed error diagnostics
                         val errorDetails = buildString {
                             if (isTimeout) {
-                                append("Model loading timed out after ${loadingTime}ms (limit: ${MODEL_LOADING_TIMEOUT_MS}ms).")
+                                append("⏱️ Model loading timed out after ${loadingTime}ms (limit: ${MODEL_LOADING_TIMEOUT_MS}ms).")
                                 appendLine()
-                                append("This usually indicates MediaPipe initialization issues or insufficient system resources.")
+                                append("This usually indicates initialization issues or insufficient system resources.")
                             } else {
-                                append("Failed to initialize AI inference service for model ${model.modelName}.")
+                                append("❌ Failed to initialize AI inference service for model ${model.modelName}.")
                             }
                             appendLine()
-                            appendLine("Error: ${e.message}")
-                            appendLine("Exception type: ${e.javaClass.simpleName}")
-                            appendLine("Loading time: ${loadingTime}ms")
+                            appendLine("📋 Error Details:")
+                            appendLine("   Error: ${e.message}")
+                            appendLine("   Type: ${e.javaClass.simpleName}")
+                            appendLine("   Loading time: ${loadingTime}ms")
+                            appendLine("   Model format: ${diagnostics.modelInfo.format}")
                             
-                            // Model file diagnostics
-                            try {
-                                val modelFile = ModelDetector.getModelFile(context, model)
-                                appendLine("Model file: ${modelFile?.absolutePath ?: "Not found"}")
-                                appendLine("File exists: ${modelFile?.exists() ?: false}")
-                                if (modelFile?.exists() == true) {
-                                    appendLine("File size: ${formatBytes(modelFile.length())}")
-                                    appendLine("File readable: ${modelFile.canRead()}")
-                                    appendLine("Last modified: ${java.util.Date(modelFile.lastModified())}")
+                            // Quick diagnostics summary
+                            appendLine()
+                            appendLine("📊 Quick Diagnostics:")
+                            appendLine("   Device: ${diagnostics.systemInfo.deviceModel}")
+                            appendLine("   Android: ${diagnostics.systemInfo.androidVersion}")
+                            appendLine("   RAM: ${AIErrorDiagnostics.formatBytes(diagnostics.memoryInfo.totalRam)} total, ${AIErrorDiagnostics.formatBytes(diagnostics.memoryInfo.availableRam)} available")
+                            appendLine("   Storage: ${AIErrorDiagnostics.formatBytes(diagnostics.storageInfo.internalFree)} free")
+                            appendLine("   Model file: ${if (diagnostics.modelInfo.fileExists) "✅ ${AIErrorDiagnostics.formatBytes(diagnostics.modelInfo.fileSize)}" else "❌ Not found"}")
+                            
+                            // Specific error causes
+                            appendLine()
+                            appendLine("🔍 Likely Causes:")
+                            if (!diagnostics.modelInfo.fileExists) {
+                                appendLine("   • Model file not found - download incomplete or failed")
+                            } else if (!diagnostics.modelInfo.downloadComplete) {
+                                appendLine("   • Model download incomplete - expected ${AIErrorDiagnostics.formatBytes(diagnostics.modelInfo.expectedSize ?: 0)}, got ${AIErrorDiagnostics.formatBytes(diagnostics.modelInfo.fileSize)}")
+                            } else if (diagnostics.modelInfo.isCorrupted) {
+                                appendLine("   • Model file appears corrupted")
+                            } else if (diagnostics.modelInfo.format == ModelFormat.LITERT_LM && diagnostics.memoryInfo.availableRam < 4_000_000_000L) {
+                                appendLine("   • Gemma 4 requires at least 4GB free RAM, you have ${AIErrorDiagnostics.formatBytes(diagnostics.memoryInfo.availableRam)}")
+                            } else if (diagnostics.memoryInfo.lowMemory) {
+                                appendLine("   • System is low on memory")
+                            } else if (e.message?.contains("Failed to create session") == true) {
+                                appendLine("   • Model format incompatibility")
+                                if (diagnostics.modelInfo.format == ModelFormat.LITERT_LM) {
+                                    appendLine("     Gemma 4 uses LiteRT-LM format, not MediaPipe")
                                 }
-                            } catch (fileE: Exception) {
-                                appendLine("Could not get model file info: ${fileE.message}")
+                            } else if (e.message?.contains("OutOfMemory") == true || e.message?.contains("memory") == true) {
+                                appendLine("   • Out of memory during model loading")
                             }
                             
-                            // Basic system info
-                            appendLine("MediaPipe backend: ${model.preferredBackend?.name ?: "AUTO"}")
-                            
-                            // Check for common issues and provide targeted help
-                            if (e.message?.contains("Failed to create session") == true) {
-                                appendLine()
-                                appendLine("Model compatibility issue detected.")
-                                appendLine("This model may not be compatible with the current MediaPipe version.")
-                            } else if (e.message?.contains("OutOfMemory") == true || e.message?.contains("memory") == true) {
-                                appendLine()
-                                appendLine("Memory issue detected. Try restarting the app or using a smaller model.")
+                            // Recommendations
+                            appendLine()
+                            appendLine("💡 Recommendations:")
+                            diagnostics.recommendations.forEach { rec ->
+                                appendLine("   $rec")
                             }
                             
                             appendLine()
-                            appendLine("This model has been marked as failed and will be excluded from future selections.")
-                            appendLine("You can retry testing it from the Model Manager.")
-                            
-                            if (isTimeout) {
-                                appendLine()
-                                appendLine("Troubleshooting timeout issues:")
-                                appendLine("- Restart the app to clear any stuck MediaPipe processes")
-                                appendLine("- Check if the model file is corrupted by re-downloading")
-                            }
+                            appendLine("📝 This model has been marked as failed.")
+                            appendLine("   You can retry testing it from the Model Manager.")
                         }
                         
                         throw AIServiceException(errorDetails)

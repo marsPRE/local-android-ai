@@ -3,6 +3,13 @@ package me.bechberger.phoneserver.ai
 import android.content.Context
 import android.graphics.Bitmap
 import android.util.Log
+import com.google.ai.edge.litertlm.Backend as LiteRTBackend
+import com.google.ai.edge.litertlm.Engine
+import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.Conversation
+import com.google.ai.edge.litertlm.ConversationConfig
+import com.google.ai.edge.litertlm.SamplerConfig
+import com.google.ai.edge.litertlm.Message
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.tasks.genai.llminference.GraphOptions
@@ -17,7 +24,7 @@ import java.io.File
 import kotlin.math.max
 
 /**
- * Core AI inference service using MediaPipe LLM inference.
+ * Core AI inference service supporting both MediaPipe and LiteRT-LM backends.
  * Manages model loading, session creation, and text generation.
  */
 class AIInferenceService private constructor(
@@ -25,8 +32,14 @@ class AIInferenceService private constructor(
     private val model: AIModel
 ) {
     
+    // MediaPipe components
     private var llmInference: LlmInference? = null
     private var llmInferenceSession: LlmInferenceSession? = null
+    
+    // LiteRT-LM components
+    private var litertEngine: Engine? = null
+    private var litertConversation: Conversation? = null
+    
     private val tag = "AIInferenceService"
     
     companion object {
@@ -43,17 +56,16 @@ class AIInferenceService private constructor(
             return withContext(Dispatchers.IO) {
                 val service = AIInferenceService(context, model)
                 
-                // Add progress logging during initialization
-                Timber.d("Starting MediaPipe initialization for model: ${model.modelName}")
+                Timber.d("Starting initialization for model: ${model.modelName} (${model.modelFormat})")
                 val initStartTime = System.currentTimeMillis()
                 
                 try {
                     service.initialize()
                     val initTime = System.currentTimeMillis() - initStartTime
-                    Timber.d("MediaPipe initialization completed in ${initTime}ms for model: ${model.modelName}")
+                    Timber.d("Initialization completed in ${initTime}ms for model: ${model.modelName}")
                 } catch (e: Exception) {
                     val initTime = System.currentTimeMillis() - initStartTime
-                    Timber.e(e, "MediaPipe initialization failed after ${initTime}ms for model: ${model.modelName}")
+                    Timber.e(e, "Initialization failed after ${initTime}ms for model: ${model.modelName}")
                     throw e
                 }
                 
@@ -63,16 +75,18 @@ class AIInferenceService private constructor(
     }
     
     /**
-     * Initialize the inference engine and session
+     * Initialize the inference engine based on model format
      */
     private suspend fun initialize() {
         if (!ModelDetector.isModelAvailable(context, model)) {
-            throw ModelNotDownloadedException("Model ${model.modelName} is not available (missing .task file)")
+            throw ModelNotDownloadedException("Model ${model.modelName} is not available (missing file)")
         }
         
         try {
-            createEngine()
-            createSession()
+            when (model.modelFormat) {
+                ModelFormat.MEDIAPIPE -> initializeMediaPipe()
+                ModelFormat.LITERT_LM -> initializeLiteRTLM()
+            }
             Timber.i("AI inference service initialized for model: ${model.modelName}")
         } catch (e: Exception) {
             Timber.e(e, "Failed to initialize AI inference service")
@@ -81,65 +95,91 @@ class AIInferenceService private constructor(
     }
     
     /**
-     * Create the LLM inference engine
+     * Initialize MediaPipe backend
      */
-    private fun createEngine() {
+    private fun initializeMediaPipe() {
         val modelFile = ModelDetector.getModelFile(context, model)
             ?: throw ModelNotDownloadedException("Model file not found for ${model.modelName}")
-            
-        if (!modelFile.exists()) {
-            throw ModelNotDownloadedException("Model file does not exist: ${modelFile.absolutePath}")
-        }
-        
-        if (!modelFile.canRead()) {
-            throw AIServiceException("Model file is not readable: ${modelFile.absolutePath}")
-        }
-        
-        if (modelFile.length() == 0L) {
-            throw AIServiceException("Model file is empty: ${modelFile.absolutePath}")
-        }
         
         val modelPath = modelFile.absolutePath
         
-        // Log model information
-        Timber.d("Loading model: ${model.modelName}")
-        Timber.d("  Model path: $modelPath")
-        Timber.d("  Model size: ${formatBytes(modelFile.length())}")
+        Timber.d("Loading MediaPipe model: ${model.modelName}")
+        Timber.d("  Path: $modelPath")
+        Timber.d("  Size: ${formatBytes(modelFile.length())}")
         
-        try {
-            Timber.d("Creating LLM inference engine...")
-            val engineStartTime = System.currentTimeMillis()
-            
-            val optionsBuilder = LlmInference.LlmInferenceOptions.builder()
-                .setModelPath(modelPath)
-                .setMaxTokens(MAX_TOKENS)
-                .setMaxNumImages(if (model.supportsVision) 1 else 0)  // Enable image support
-            
-            // Set backend preference if specified
-            model.preferredBackend?.let { backend ->
-                optionsBuilder.setPreferredBackend(backend)
-                Timber.d("Using preferred backend: ${backend.name}")
-            }
-            
-            Timber.d("Creating LLM inference engine with:")
-            Timber.d("  Model path: $modelPath")
-            Timber.d("  Max tokens: $MAX_TOKENS")
-            Timber.d("  Preferred backend: ${model.preferredBackend?.name ?: "Default"}")
-            
-            llmInference = LlmInference.createFromOptions(context, optionsBuilder.build())
-            
-            val engineTime = System.currentTimeMillis() - engineStartTime
-            Timber.i("LLM inference engine created successfully for model: ${model.modelName} in ${engineTime}ms")
-        } catch (e: OutOfMemoryError) {
-            val errorMsg = "Out of memory while loading model ${model.modelName}. " +
-                    "Try a smaller model or restart the app to free memory."
-            Timber.e(e, errorMsg)
-            throw AIServiceException(errorMsg, e)
-        } catch (e: Exception) {
-            val errorMsg = "Failed to create LLM inference engine for model ${model.modelName}: ${e.message}"
-            Timber.e(e, errorMsg)
-            throw AIServiceException(errorMsg, e)
+        val optionsBuilder = LlmInference.LlmInferenceOptions.builder()
+            .setModelPath(modelPath)
+            .setMaxTokens(MAX_TOKENS)
+            .setMaxNumImages(if (model.supportsVision) 1 else 0)
+        
+        // Set backend preference if specified (MediaPipe Backend)
+        val backend = model.preferredBackend as? com.google.mediapipe.tasks.genai.llminference.LlmInference.Backend
+        backend?.let {
+            optionsBuilder.setPreferredBackend(it)
+            Timber.d("Using MediaPipe backend: ${it.name}")
         }
+        
+        llmInference = LlmInference.createFromOptions(context, optionsBuilder.build())
+        createMediaPipeSession()
+        
+        Timber.i("MediaPipe engine created for ${model.modelName}")
+    }
+    
+    /**
+     * Initialize LiteRT-LM backend
+     */
+    private fun initializeLiteRTLM() {
+        val modelFile = ModelDetector.getModelFile(context, model)
+            ?: throw ModelNotDownloadedException("Model file not found for ${model.modelName}")
+        
+        val modelPath = modelFile.absolutePath
+        
+        Timber.d("Loading LiteRT-LM model: ${model.modelName}")
+        Timber.d("  Path: $modelPath")
+        Timber.d("  Size: ${formatBytes(modelFile.length())}")
+        
+        val backend = model.preferredBackend as? LiteRTBackend ?: LiteRTBackend.CPU
+        
+        val engineConfig = EngineConfig(
+            modelPath = modelPath,
+            backend = backend,
+            cacheDir = context.cacheDir.path
+        )
+        
+        litertEngine = Engine(engineConfig)
+        litertEngine?.initialize()
+        
+        // Create conversation with sampler config
+        val samplerConfig = SamplerConfig(
+            topK = model.topK,
+            topP = model.topP.toDouble(),
+            temperature = model.temperature.toDouble()
+        )
+        
+        val conversationConfig = ConversationConfig(
+            samplerConfig = samplerConfig
+        )
+        
+        litertConversation = litertEngine?.createConversation(conversationConfig)
+        
+        Timber.i("LiteRT-LM engine created for ${model.modelName} with backend: ${backend.name}")
+    }
+    
+    /**
+     * Create MediaPipe inference session
+     */
+    private fun createMediaPipeSession() {
+        val inference = llmInference 
+            ?: throw AIServiceException("LLM inference engine not initialized")
+        
+        val sessionOptions = LlmInferenceSessionOptions.builder()
+            .setTemperature(model.temperature)
+            .setTopK(model.topK)
+            .setTopP(model.topP)
+            .build()
+        
+        llmInferenceSession = LlmInferenceSession.createFromOptions(inference, sessionOptions)
+        Timber.d("MediaPipe session created")
     }
     
     /**
@@ -156,23 +196,10 @@ class AIInferenceService private constructor(
             val startTime = System.currentTimeMillis()
             
             try {
-                // Update session parameters if provided
-                if (temperature != null || topK != null || topP != null) {
-                    updateSessionParameters(temperature, topK, topP)
+                val response = when (model.modelFormat) {
+                    ModelFormat.MEDIAPIPE -> generateTextMediaPipe(prompt, temperature, topK, topP, progressCallback)
+                    ModelFormat.LITERT_LM -> generateTextLiteRTLM(prompt, temperature, topK, topP, progressCallback)
                 }
-                
-                // Generate response
-                val session = llmInferenceSession 
-                    ?: throw AIServiceException("Inference session not initialized")
-                
-                session.addQueryChunk(prompt)
-                
-                val progressListener = ProgressListener<String> { partialResult, isDone ->
-                    progressCallback?.invoke(partialResult, isDone)
-                }
-                
-                val future: ListenableFuture<String> = session.generateResponseAsync(progressListener)
-                val response = future.get() // This blocks, but we're in IO context
                 
                 val inferenceTime = System.currentTimeMillis() - startTime
                 val tokenCount = estimateTokenCount(prompt + response)
@@ -189,13 +216,80 @@ class AIInferenceService private constructor(
                         temperature = temperature ?: model.temperature,
                         topK = topK ?: model.topK,
                         topP = topP ?: model.topP,
-                        backend = model.preferredBackend?.name ?: "CPU"
+                        backend = getBackendName()
                     )
                 )
             } catch (e: Exception) {
                 Timber.e(e, "Failed to generate text")
                 throw AIServiceException("Text generation failed", e)
             }
+        }
+    }
+    
+    /**
+     * Generate text using MediaPipe
+     */
+    private fun generateTextMediaPipe(
+        prompt: String,
+        temperature: Float? = null,
+        topK: Int? = null,
+        topP: Float? = null,
+        progressCallback: ((String, Boolean) -> Unit)? = null
+    ): String {
+        // Update session parameters if provided (requires session recreation in MediaPipe)
+        if (temperature != null || topK != null || topP != null) {
+            Timber.d("Dynamic parameter updates not fully supported in MediaPipe, using model defaults")
+        }
+        
+        val session = llmInferenceSession 
+            ?: throw AIServiceException("Inference session not initialized")
+        
+        session.addQueryChunk(prompt)
+        
+        val progressListener = ProgressListener<String> { partialResult, isDone ->
+            progressCallback?.invoke(partialResult, isDone)
+        }
+        
+        val future: ListenableFuture<String> = session.generateResponseAsync(progressListener)
+        return future.get()
+    }
+    
+    /**
+     * Generate text using LiteRT-LM
+     */
+    private fun generateTextLiteRTLM(
+        prompt: String,
+        temperature: Float? = null,
+        topK: Int? = null,
+        topP: Float? = null,
+        progressCallback: ((String, Boolean) -> Unit)? = null
+    ): String {
+        val conversation = litertConversation
+            ?: throw AIServiceException("LiteRT-LM conversation not initialized")
+        
+        // Update sampler config if parameters changed
+        if (temperature != null || topK != null || topP != null) {
+            val newSamplerConfig = SamplerConfig(
+                topK = topK ?: model.topK,
+                topP = (topP ?: model.topP).toDouble(),
+                temperature = (temperature ?: model.temperature).toDouble()
+            )
+            // Note: LiteRT-LM doesn't support dynamic config changes, would need new conversation
+            Timber.d("Dynamic parameter changes require new conversation in LiteRT-LM")
+        }
+        
+        val userMessage = Message.of(prompt)
+        
+        // Use streaming if callback provided
+        return if (progressCallback != null) {
+            val responseBuilder = StringBuilder()
+            conversation.generateResponse(userMessage) { partialResponse, isDone ->
+                responseBuilder.append(partialResponse)
+                progressCallback.invoke(responseBuilder.toString(), isDone)
+            }
+            responseBuilder.toString()
+        } else {
+            conversation.generateResponse(userMessage)
         }
     }
     
@@ -214,46 +308,17 @@ class AIInferenceService private constructor(
             val startTime = System.currentTimeMillis()
             
             try {
-                // Check if model supports vision
                 if (!model.supportsVision) {
                     throw AIServiceException("Model ${model.modelName} does not support vision/multimodal input")
                 }
                 
-                // Create a new session with vision support
-                val sessionOptions = LlmInferenceSessionOptions.builder()
-                    .setTemperature(temperature ?: model.temperature)
-                    .setTopK(topK ?: model.topK)
-                    .setTopP(topP ?: model.topP)
-                    .setGraphOptions(
-                        GraphOptions.builder()
-                            .setEnableVisionModality(model.supportsVision)
-                            .build()
-                    )
-                    .build()
-                
-                val session = LlmInferenceSession.createFromOptions(llmInference!!, sessionOptions)
-                
-                // Add text prompt BEFORE image (gallery order)
-                session.addQueryChunk(prompt)
-                
-                // Add image using MediaPipe format
-                val mpImage = BitmapImageBuilder(image).build()
-                session.addImage(mpImage)
-                
-                Timber.d("Added image to LLM session for multimodal inference (${image.width}x${image.height})")
-                
-                val progressListener = ProgressListener<String> { partialResult, isDone ->
-                    progressCallback?.invoke(partialResult, isDone)
+                val response = when (model.modelFormat) {
+                    ModelFormat.MEDIAPIPE -> generateMultimodalMediaPipe(prompt, image, temperature, topK, topP, progressCallback)
+                    ModelFormat.LITERT_LM -> throw AIServiceException("Vision not yet implemented for LiteRT-LM")
                 }
-                
-                val future: ListenableFuture<String> = session.generateResponseAsync(progressListener)
-                val response = future.get() // This blocks, but we're in IO context
                 
                 val inferenceTime = System.currentTimeMillis() - startTime
                 val tokenCount = estimateTokenCount(prompt + response)
-                
-                // Close the session as it's single-use for multimodal
-                session.close()
                 
                 AITextResponse(
                     response = response,
@@ -267,79 +332,95 @@ class AIInferenceService private constructor(
                         temperature = temperature ?: model.temperature,
                         topK = topK ?: model.topK,
                         topP = topP ?: model.topP,
-                        backend = model.preferredBackend?.name ?: "CPU",
+                        backend = getBackendName(),
                         isMultimodal = true
                     )
                 )
             } catch (e: Exception) {
-                Timber.e(e, "Failed to generate multimodal text - detailed error analysis")
-                
-                // Detailed error analysis
-                val errorDetails = buildString {
-                    appendLine("=== MULTIMODAL AI ERROR ANALYSIS ===")
-                    appendLine("Error Type: ${e.javaClass.simpleName}")
-                    appendLine("Error Message: ${e.message}")
-                    appendLine("Model: ${model.modelName} (${model.name})")
-                    appendLine("Image Size: ${image.width}x${image.height}")
-                    appendLine("Image Format: ${image.config}")
-                    appendLine("Estimated Image Memory: ${estimateBitmapMemoryUsage(image)}MB")
-                    appendLine("Prompt Length: ${prompt.length} characters")
-                    appendLine("Backend: ${model.preferredBackend?.name ?: "CPU"}")
-                    appendLine("Model Type: ${if (model.supportsVision) "Multimodal" else "Text-only"}")
-                    
-                    // Add stack trace summary (first 10 frames)
-                    e.stackTrace.take(10).forEach { frame ->
-                        appendLine("Stack: ${frame.className}.${frame.methodName}:${frame.lineNumber}")
-                    }
-                }
-                
-                Timber.e("Detailed multimodal error: $errorDetails")
-                throw AIServiceException("Multimodal text generation failed. $errorDetails", e)
+                Timber.e(e, "Failed to generate multimodal text")
+                throw AIServiceException("Multimodal text generation failed", e)
             }
         }
     }
     
     /**
-     * Generate text with streaming updates
+     * Generate multimodal response using MediaPipe
      */
-    suspend fun generateTextStreaming(
+    private fun generateMultimodalMediaPipe(
         prompt: String,
+        image: Bitmap,
         temperature: Float? = null,
         topK: Int? = null,
         topP: Float? = null,
-        onProgress: (String, Boolean) -> Unit
-    ): AITextResponse {
-        val response = generateText(prompt, temperature, topK, topP) { partial, done ->
-            onProgress(partial, done)
+        progressCallback: ((String, Boolean) -> Unit)? = null
+    ): String {
+        val inference = llmInference
+            ?: throw AIServiceException("LLM inference not initialized")
+        
+        val sessionOptions = LlmInferenceSessionOptions.builder()
+            .setTemperature(temperature ?: model.temperature)
+            .setTopK(topK ?: model.topK)
+            .setTopP(topP ?: model.topP)
+            .setGraphOptions(
+                GraphOptions.builder()
+                    .setEnableVisionModality(true)
+                    .build()
+            )
+            .build()
+        
+        val session = LlmInferenceSession.createFromOptions(inference, sessionOptions)
+        
+        session.addQueryChunk(prompt)
+        val mpImage = BitmapImageBuilder(image).build()
+        session.addImage(mpImage)
+        
+        Timber.d("Added image to session (${image.width}x${image.height})")
+        
+        val progressListener = ProgressListener<String> { partialResult, isDone ->
+            progressCallback?.invoke(partialResult, isDone)
         }
+        
+        val future: ListenableFuture<String> = session.generateResponseAsync(progressListener)
+        val response = future.get()
+        
+        session.close()
         return response
     }
     
     /**
-     * Estimate remaining tokens for context length management
+     * Get backend name for metadata
      */
-    fun estimateRemainingTokens(prompt: String): Int {
-        val session = llmInferenceSession ?: return -1
-        
-        return try {
-            val sizeOfPrompt = session.sizeInTokens(prompt)
-            val remainingTokens = MAX_TOKENS - sizeOfPrompt - DECODE_TOKEN_OFFSET
-            max(0, remainingTokens)
-        } catch (e: Exception) {
-            Timber.w(e, "Failed to estimate token count")
-            -1
+    private fun getBackendName(): String {
+        return when (model.modelFormat) {
+            ModelFormat.MEDIAPIPE -> (model.preferredBackend as? com.google.mediapipe.tasks.genai.llminference.LlmInference.Backend)?.name ?: "CPU"
+            ModelFormat.LITERT_LM -> (model.preferredBackend as? LiteRTBackend)?.name ?: "CPU"
         }
     }
     
     /**
-     * Reset the inference session
+     * Reset the inference session/conversation
      */
     suspend fun resetSession() {
         withContext(Dispatchers.IO) {
             try {
-                llmInferenceSession?.close()
-                createSession()
-                Timber.d("Inference session reset")
+                when (model.modelFormat) {
+                    ModelFormat.MEDIAPIPE -> {
+                        llmInferenceSession?.close()
+                        createMediaPipeSession()
+                    }
+                    ModelFormat.LITERT_LM -> {
+                        litertConversation?.close()
+                        val samplerConfig = SamplerConfig(
+                            topK = model.topK,
+                            topP = model.topP.toDouble(),
+                            temperature = model.temperature.toDouble()
+                        )
+                        litertConversation = litertEngine?.createConversation(
+                            ConversationConfig(samplerConfig = samplerConfig)
+                        )
+                    }
+                }
+                Timber.d("Session reset")
             } catch (e: Exception) {
                 Timber.e(e, "Failed to reset session")
                 throw AIServiceException("Failed to reset session", e)
@@ -352,8 +433,16 @@ class AIInferenceService private constructor(
      */
     fun close() {
         try {
-            llmInferenceSession?.close()
-            llmInference?.close()
+            when (model.modelFormat) {
+                ModelFormat.MEDIAPIPE -> {
+                    llmInferenceSession?.close()
+                    llmInference?.close()
+                }
+                ModelFormat.LITERT_LM -> {
+                    litertConversation?.close()
+                    litertEngine?.close()
+                }
+            }
             Timber.d("AI inference service closed")
         } catch (e: Exception) {
             Timber.e(e, "Error closing AI inference service")
@@ -361,55 +450,10 @@ class AIInferenceService private constructor(
     }
     
     /**
-     * Create the inference session with model parameters
-     */
-    private fun createSession() {
-        val inference = llmInference 
-            ?: throw AIServiceException("LLM inference engine not initialized")
-        
-        try {
-            Timber.d("Creating inference session...")
-            val sessionStartTime = System.currentTimeMillis()
-            
-            val sessionOptions = LlmInferenceSessionOptions.builder()
-                .setTemperature(model.temperature)
-                .setTopK(model.topK)
-                .setTopP(model.topP)
-                .build()
-            
-            Timber.d("Creating inference session with parameters:")
-            Timber.d("  Temperature: ${model.temperature}")
-            Timber.d("  TopK: ${model.topK}")
-            Timber.d("  TopP: ${model.topP}")
-            
-            llmInferenceSession = LlmInferenceSession.createFromOptions(inference, sessionOptions)
-            
-            val sessionTime = System.currentTimeMillis() - sessionStartTime
-            Timber.i("Inference session created successfully for model: ${model.modelName} in ${sessionTime}ms")
-        } catch (e: Exception) {
-            val errorMsg = "Failed to create inference session for model ${model.modelName}: ${e.message}"
-            Timber.e(e, errorMsg)
-            throw AIServiceException(errorMsg, e)
-        }
-    }
-    
-    /**
-     * Update session parameters dynamically
-     */
-    private fun updateSessionParameters(temperature: Float?, topK: Int?, topP: Float?) {
-        // Note: MediaPipe doesn't support dynamic parameter updates
-        // We would need to recreate the session, but for now we'll log this
-        Timber.d("Dynamic parameter updates not supported by MediaPipe, using model defaults")
-    }
-    
-    /**
      * Extract thinking process from response for reasoning models
      */
     private fun extractThinking(response: String): String? {
-        // For models with thinking capability, extract the thinking process
-        // This would depend on the specific model's output format
         return if (model.thinking) {
-            // Simple implementation - look for thinking markers
             val thinkingPattern = Regex("""\<think\>(.*?)\</think\>""", RegexOption.DOT_MATCHES_ALL)
             thinkingPattern.find(response)?.groupValues?.get(1)?.trim()
         } else null
@@ -419,75 +463,7 @@ class AIInferenceService private constructor(
      * Estimate token count for text
      */
     private fun estimateTokenCount(text: String): Int {
-        // Simple estimation: roughly 4 characters per token
         return (text.length / 4).coerceAtLeast(1)
-    }
-    
-    /**
-     * Format AI model response text to be more readable
-     * Fixes concatenated words that often occur in AI model outputs
-     */
-    fun formatResponseText(rawResponse: String): String {
-        if (rawResponse.isBlank()) return rawResponse
-        
-        var formatted = rawResponse
-        
-        // Fix concatenated words by adding spaces before capital letters (but preserve acronyms)
-        formatted = formatted.replace(Regex("([a-z])([A-Z])")) { matchResult ->
-            "${matchResult.groupValues[1]} ${matchResult.groupValues[2]}"
-        }
-        
-        // Fix common concatenated patterns
-        formatted = formatted.replace(Regex("([.!?])([A-Z])")) { matchResult ->
-            "${matchResult.groupValues[1]} ${matchResult.groupValues[2]}"
-        }
-        
-        // Fix specific common concatenated words that the model produces
-        val commonConcatenations = mapOf(
-            "HowcanI" to "How can I",
-            "helpyou" to "help you",
-            "today?I'm" to "today? I'm",
-            "readyfor" to "ready for",
-            "yourquestions" to "your questions",
-            "requests,or" to "requests, or",
-            "justachat" to "just a chat",
-            "Letme" to "Let me",
-            "knowwhat's" to "know what's",
-            "onyour" to "on your",
-            "mind.For" to "mind. For",
-            "example,I" to "example, I",
-            "Answerquestions" to "Answer questions",
-            "onawidevariety" to "on a wide variety",
-            "oftopics" to "of topics",
-            "Generatecreative" to "Generate creative",
-            "textformats" to "text formats",
-            "likepoems" to "like poems",
-            "code,scripts" to "code, scripts",
-            "musicalpieces" to "musical pieces",
-            "email,letters" to "email, letters",
-            "Summarizetext" to "Summarize text",
-            "Translatelanguages" to "Translate languages",
-            "Helpyou" to "Help you",
-            "brainstormideas" to "brainstorm ideas",
-            "Justhave" to "Just have",
-            "acasual" to "a casual",
-            "conversation!" to "conversation!",
-            "Justtell" to "Just tell",
-            "mewhat" to "me what",
-            "you'dlike" to "you'd like",
-            "todo" to "to do"
-        )
-        
-        // Apply all concatenation fixes
-        for ((concatenated, fixed) in commonConcatenations) {
-            formatted = formatted.replace(concatenated, fixed)
-        }
-        
-        // Clean up extra whitespace
-        formatted = formatted.replace(Regex("\\s+"), " ")
-        formatted = formatted.trim()
-        
-        return formatted
     }
     
     /**
@@ -502,22 +478,6 @@ class AIInferenceService private constructor(
         
         return String.format("%.1f %s", value, units[digitGroups])
     }
-    
-    /**
-     * Estimate memory usage of a bitmap in megabytes
-     */
-    private fun estimateBitmapMemoryUsage(bitmap: Bitmap): Float {
-        val bytesPerPixel = when (bitmap.config) {
-            Bitmap.Config.ARGB_8888 -> 4
-            Bitmap.Config.RGB_565 -> 2
-            Bitmap.Config.ARGB_4444 -> 2
-            Bitmap.Config.ALPHA_8 -> 1
-            else -> 4 // Default to ARGB_8888
-        }
-        val totalBytes = bitmap.width * bitmap.height * bytesPerPixel
-        return totalBytes / (1024f * 1024f) // Convert to MB
-    }
-
 }
 
 /**

@@ -1,17 +1,26 @@
 package me.bechberger.phoneserver.ai
 
-import com.google.mediapipe.tasks.genai.llminference.LlmInference.Backend
+import com.google.ai.edge.litertlm.Backend as LiteRTBackend
+import com.google.mediapipe.tasks.genai.llminference.LlmInference.Backend as MediaPipeBackend
+
+/**
+ * Model format types for different inference engines
+ */
+enum class ModelFormat {
+    MEDIAPIPE,  // .task format for MediaPipe
+    LITERT_LM   // .litertlm format for LiteRT-LM
+}
 
 /**
  * Supported AI models for LLM inference.
- * Based on MediaPipe LLM inference with specific models for the AI Phone Server.
+ * Supports both MediaPipe and LiteRT-LM backends.
  */
 enum class AIModel(
     val modelName: String,
     val fileName: String, // Just the filename (without path)
     val url: String,
     val licenseUrl: String,
-    val preferredBackend: Backend?,
+    val preferredBackend: Any?, // MediaPipeBackend or LiteRTBackend
     val thinking: Boolean,
     val temperature: Float,
     val topK: Int,
@@ -20,14 +29,15 @@ enum class AIModel(
     val maxTokens: Int,
     val description: String,
     val needsAuth: Boolean = false,
-    val licenseStatement: String? = null
+    val licenseStatement: String? = null,
+    val modelFormat: ModelFormat = ModelFormat.MEDIAPIPE
 ) {
     GEMMA_3_1B_IT(
         modelName = "Gemma 3n E2B IT",
         fileName = "gemma-3n-E2B-it-int4.task",
         url = "https://huggingface.co/google/gemma-3n-E2B-it-litert-preview/blob/b2b54222ba849ee74ac9f88d6af2470b390afa9e/gemma-3n-E2B-it-int4.task",
         licenseUrl = "https://ai.google.dev/gemma/terms",
-        preferredBackend = Backend.CPU,
+        preferredBackend = MediaPipeBackend.CPU,
         thinking = false,
         temperature = 1.0f,
         topK = 64,
@@ -44,7 +54,7 @@ enum class AIModel(
         fileName = "DeepSeek-R1-Distill-Qwen-1.5B_multi-prefill-seq_q8_ekv1280.task",
         url = "https://huggingface.co/litert-community/DeepSeek-R1-Distill-Qwen-1.5B/resolve/main/DeepSeek-R1-Distill-Qwen-1.5B_multi-prefill-seq_q8_ekv1280.task",
         licenseUrl = "https://huggingface.co/litert-community/DeepSeek-R1-Distill-Qwen-1.5B",
-        preferredBackend = Backend.CPU,
+        preferredBackend = MediaPipeBackend.CPU,
         thinking = true,
         temperature = 0.6f,
         topK = 40,
@@ -61,7 +71,7 @@ enum class AIModel(
         fileName = "Llama-3.2-1B-Instruct_multi-prefill-seq_q8_ekv1280.task",
         url = "https://huggingface.co/litert-community/Llama-3.2-1B-Instruct/resolve/main/Llama-3.2-1B-Instruct_multi-prefill-seq_q8_ekv1280.task",
         licenseUrl = "https://huggingface.co/litert-community/Llama-3.2-1B-Instruct",
-        preferredBackend = Backend.CPU,
+        preferredBackend = MediaPipeBackend.CPU,
         thinking = false,
         temperature = 0.6f,
         topK = 64,
@@ -78,7 +88,7 @@ enum class AIModel(
         fileName = "Llama-3.2-3B-Instruct_multi-prefill-seq_q8_ekv1280.task",
         url = "https://huggingface.co/litert-community/Llama-3.2-3B-Instruct/resolve/main/Llama-3.2-3B-Instruct_multi-prefill-seq_q8_ekv1280.task",
         licenseUrl = "https://huggingface.co/litert-community/Llama-3.2-3B-Instruct",
-        preferredBackend = Backend.CPU,
+        preferredBackend = MediaPipeBackend.CPU,
         thinking = false,
         temperature = 0.6f,
         topK = 64,
@@ -95,7 +105,7 @@ enum class AIModel(
         fileName = "TinyLlama-1.1B-Chat-v1.0_multi-prefill-seq_q8_ekv1024.task",
         url = "https://huggingface.co/litert-community/TinyLlama-1.1B-Chat-v1.0/resolve/main/TinyLlama-1.1B-Chat-v1.0_multi-prefill-seq_q8_ekv1280.task",
         licenseUrl = "https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0",
-        preferredBackend = Backend.CPU,
+        preferredBackend = MediaPipeBackend.CPU,
         thinking = false,
         temperature = 0.7f,
         topK = 40,
@@ -109,19 +119,20 @@ enum class AIModel(
     
     GEMMA_4_E4B_IT(
         modelName = "Gemma 4 E4B IT",
-        fileName = "gemma-4-E4B-it-web.task",
-        url = "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it-web.task",
+        fileName = "gemma-4-E4B-it.litertlm",
+        url = "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it.litertlm",
         licenseUrl = "https://ai.google.dev/gemma/terms",
-        preferredBackend = Backend.GPU,
+        preferredBackend = LiteRTBackend.GPU,
         thinking = false,
         temperature = 1.0f,
         topK = 64,
         topP = 0.95f,
         supportsVision = true,
         maxTokens = 4096,
-        description = "Gemma 4 4B instruction-tuned model with vision support, optimized for on-device inference",
+        description = "Gemma 4 4B instruction-tuned model with vision support (LiteRT-LM)",
         needsAuth = true,
-        licenseStatement = "This response was generated using Gemma 4, a model developed by Google. Usage is subject to the Gemma Terms of Use: https://ai.google.dev/gemma/terms"
+        licenseStatement = "This response was generated using Gemma 4, a model developed by Google. Usage is subject to the Gemma Terms of Use: https://ai.google.dev/gemma/terms",
+        modelFormat = ModelFormat.LITERT_LM
     );
 
     companion object {
