@@ -13,6 +13,7 @@ import me.bechberger.phoneserver.services.LocationService
 import me.bechberger.phoneserver.services.OrientationService
 import me.bechberger.phoneserver.ai.AIService
 import me.bechberger.phoneserver.ai.AIModel
+import me.bechberger.phoneserver.ai.AIErrorDiagnostics
 import me.bechberger.phoneserver.ai.ModelDetector
 import me.bechberger.phoneserver.ai.ModelDownloadRequest
 import me.bechberger.phoneserver.ai.ModelDownloadResponse

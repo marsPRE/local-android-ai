@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.os.Environment
 import android.util.Base64
+import me.bechberger.phoneserver.ai.AIErrorDiagnostics
 import me.bechberger.phoneserver.services.CameraService
 import me.bechberger.phoneserver.services.SharedCameraService
 import me.bechberger.phoneserver.lifecycle.SimpleLifecycleOwner
