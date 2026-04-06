@@ -138,7 +138,8 @@ class AIInferenceService private constructor(
         Timber.d("  Path: $modelPath")
         Timber.d("  Size: ${formatBytes(modelFile.length())}")
         
-        val backend = model.preferredBackend as? LiteRTBackend ?: LiteRTBackend.CPU
+        // Always use GPU for Gemma 4 if available, otherwise CPU
+        val backend = LiteRTBackend.GPU
         
         val engineConfig = EngineConfig(
             modelPath = modelPath,
@@ -162,7 +163,7 @@ class AIInferenceService private constructor(
         
         litertConversation = litertEngine?.createConversation(conversationConfig)
         
-        Timber.i("LiteRT-LM engine created for ${model.modelName} with backend: ${backend.name}")
+        Timber.i("LiteRT-LM engine created for ${model.modelName}")
     }
     
     /**
@@ -392,8 +393,8 @@ class AIInferenceService private constructor(
      */
     private fun getBackendName(): String {
         return when (model.modelFormat) {
-            ModelFormat.MEDIAPIPE -> (model.preferredBackend as? com.google.mediapipe.tasks.genai.llminference.LlmInference.Backend)?.name ?: "CPU"
-            ModelFormat.LITERT_LM -> (model.preferredBackend as? LiteRTBackend)?.name ?: "CPU"
+            ModelFormat.MEDIAPIPE -> "CPU"
+            ModelFormat.LITERT_LM -> "GPU"
         }
     }
     

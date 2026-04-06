@@ -360,7 +360,7 @@ class AIService(private val context: Context) {
                         }
                         
                         // MediaPipe backend info
-                        appendLine("MediaPipe backend: ${model.preferredBackend?.name ?: "AUTO"}")
+                        appendLine("Preferred backend: ${model.preferredBackend?.let { it::class.simpleName } ?: "AUTO"}")
                         appendLine()
                         appendLine("Troubleshooting tips:")
                         appendLine("- Ensure the model file is not corrupted")
@@ -515,7 +515,7 @@ class AIService(private val context: Context) {
                         }
                         
                         // MediaPipe backend info
-                        appendLine("MediaPipe backend: ${model.preferredBackend?.name ?: "AUTO"}")
+                        appendLine("Preferred backend: ${model.preferredBackend?.let { it::class.simpleName } ?: "AUTO"}")
                     }
                     
                     val errorChunk = ModelTestStreamChunk(
@@ -668,7 +668,7 @@ class AIService(private val context: Context) {
                 needsLicense = model.licenseUrl.isNotEmpty(),
                 available = isAvailable,
                 currentlyLoaded = isCurrentlyLoaded,
-                backend = model.preferredBackend?.name ?: "CPU",
+                backend = model.preferredBackend?.let { it::class.simpleName } ?: "CPU",
                 isMultiModal = model.supportsVision
             )
         }
@@ -691,7 +691,7 @@ class AIService(private val context: Context) {
                 displayName = model.modelName,
                 description = model.description,
                 supportsVision = model.supportsVision,
-                preferredBackend = model.preferredBackend?.name,
+                preferredBackend = model.preferredBackend?.let { it::class.simpleName },
                 loadedAt = modelLoadedAt ?: 0L,
                 isReady = currentInferenceService != null
             )

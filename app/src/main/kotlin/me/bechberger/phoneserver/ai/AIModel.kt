@@ -122,7 +122,7 @@ enum class AIModel(
         fileName = "gemma-4-E4B-it.litertlm",
         url = "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it.litertlm",
         licenseUrl = "https://ai.google.dev/gemma/terms",
-        preferredBackend = LiteRTBackend.GPU,
+        preferredBackend = null, // LiteRTBackend set at runtime
         thinking = false,
         temperature = 1.0f,
         topK = 64,
