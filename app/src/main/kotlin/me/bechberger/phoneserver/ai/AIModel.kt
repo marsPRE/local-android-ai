@@ -105,6 +105,23 @@ enum class AIModel(
         description = "Compact 1.1B parameter model optimized for chat",
         needsAuth = false,
         licenseStatement = "This response was generated using TinyLlama."
+    ),
+    
+    GEMMA_4_E4B_IT(
+        modelName = "Gemma 4 E4B IT",
+        fileName = "gemma-4-E4B-it-web.task",
+        url = "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it-web.task",
+        licenseUrl = "https://ai.google.dev/gemma/terms",
+        preferredBackend = Backend.GPU,
+        thinking = false,
+        temperature = 1.0f,
+        topK = 64,
+        topP = 0.95f,
+        supportsVision = true,
+        maxTokens = 4096,
+        description = "Gemma 4 4B instruction-tuned model with vision support, optimized for on-device inference",
+        needsAuth = true,
+        licenseStatement = "This response was generated using Gemma 4, a model developed by Google. Usage is subject to the Gemma Terms of Use: https://ai.google.dev/gemma/terms"
     );
 
     companion object {

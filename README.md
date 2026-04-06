@@ -14,7 +14,7 @@ Download it from the [Releases](https://github.com/parttimenerd/local-a ndroid-a
 ## Features
 
 ### AI Inference
-- **LLM Support**: Gemma 3n E2B IT, DeepSeek-R1 Distill Qwen 1.5B, Llama 3.2 (1B/3B), TinyLlama 1.1B
+- **LLM Support**: Gemma 4 E4B IT, Gemma 3n E2B IT, DeepSeek-R1 Distill Qwen 1.5B, Llama 3.2 (1B/3B), TinyLlama 1.1B
 - **Object Detection**: MediaPipe EfficientDet Lite 2
 - **Model Management**: Download, test, performance metrics (tokens/second)
 - **Streaming**: Real-time token streaming with cancellation support
@@ -99,10 +99,43 @@ GET /help
 ## 🛠️ Build Instructions
 
 ### Prerequisites
-- **Android Studio** Arctic Fox or newer
-- **Android SDK** API level 24+ (Android 7.0+)
-- **Device Requirements**: 3GB+ RAM for AI features
-- **Permissions**: Camera
+- **Android Studio** Arctic Fox or newer (or build on-device with Termux)
+- **Android SDK** API level 30+ (Android 11+)
+- **Device Requirements**: 4GB+ RAM for Gemma 4, 3GB+ for smaller models
+- **Permissions**: Camera, Storage
+
+### Build on Pixel 9 (Termux)
+```bash
+# In Termux on your Pixel 9
+pkg install openjdk-17 gradle android-sdk
+
+# Set SDK path
+export ANDROID_SDK_ROOT=$PREFIX/share/android-sdk
+
+# Create local.properties
+echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+
+# Build
+./gradlew assembleDebug
+
+# Install locally
+./gradlew installDebug
+```
+
+### Cross-Build for Pixel 9
+```bash
+# On your development machine
+export ANDROID_SDK_ROOT=/path/to/android-sdk
+
+# Create local.properties
+echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+
+# Build debug APK with GPU support
+./gradlew assembleDebug
+
+# Install on Pixel 9 via ADB
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
 
 ### Building the App
 ```bash
