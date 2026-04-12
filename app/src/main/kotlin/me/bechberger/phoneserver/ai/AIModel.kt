@@ -117,6 +117,24 @@ enum class AIModel(
         licenseStatement = "This response was generated using TinyLlama."
     ),
     
+    GEMMA_4_E2B_IT(
+        modelName = "Gemma 4 E2B IT",
+        fileName = "gemma-4-E2B-it.litertlm",
+        url = "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm",
+        licenseUrl = "https://ai.google.dev/gemma/terms",
+        preferredBackend = null,
+        thinking = false,
+        temperature = 1.0f,
+        topK = 64,
+        topP = 0.95f,
+        supportsVision = true,
+        maxTokens = 1024,
+        description = "Gemma 4 2B instruction-tuned model — faster and lighter than E4B (LiteRT-LM)",
+        needsAuth = true,
+        licenseStatement = "This response was generated using Gemma 4, a model developed by Google. Usage is subject to the Gemma Terms of Use: https://ai.google.dev/gemma/terms",
+        modelFormat = ModelFormat.LITERT_LM
+    ),
+
     GEMMA_4_E4B_IT(
         modelName = "Gemma 4 E4B IT",
         fileName = "gemma-4-E4B-it.litertlm",
@@ -128,9 +146,27 @@ enum class AIModel(
         topK = 64,
         topP = 0.95f,
         supportsVision = true,
-        maxTokens = 4096,
+        maxTokens = 1024,
         description = "Gemma 4 4B instruction-tuned model with vision support (LiteRT-LM)",
         needsAuth = true,
+        licenseStatement = "This response was generated using Gemma 4, a model developed by Google. Usage is subject to the Gemma Terms of Use: https://ai.google.dev/gemma/terms",
+        modelFormat = ModelFormat.LITERT_LM
+    ),
+
+    GEMMA_4_E4B_IT_GALLERY(
+        modelName = "Gemma 4 E4B IT (Gallery)",
+        fileName = "gemma4_4b_v09_obfus_fix_all_modalities_thinking.litertlm",
+        url = "",  // Imported from Edge Gallery — not downloadable via URL
+        licenseUrl = "https://ai.google.dev/gemma/terms",
+        preferredBackend = null,
+        thinking = true,
+        temperature = 1.0f,
+        topK = 64,
+        topP = 0.95f,
+        supportsVision = true,
+        maxTokens = 1024,
+        description = "Gemma 4 4B GPU-optimized model from Edge Gallery (all modalities + thinking)",
+        needsAuth = false,
         licenseStatement = "This response was generated using Gemma 4, a model developed by Google. Usage is subject to the Gemma Terms of Use: https://ai.google.dev/gemma/terms",
         modelFormat = ModelFormat.LITERT_LM
     );

@@ -14,6 +14,7 @@ import me.bechberger.phoneserver.services.OrientationService
 import me.bechberger.phoneserver.ai.AIService
 import me.bechberger.phoneserver.ai.AIModel
 import me.bechberger.phoneserver.ai.AIErrorDiagnostics
+import me.bechberger.phoneserver.ai.HuggingFaceTokenManager
 import me.bechberger.phoneserver.ai.ModelDetector
 import me.bechberger.phoneserver.ai.ModelDownloadRequest
 import me.bechberger.phoneserver.ai.ModelDownloadResponse
@@ -36,7 +37,7 @@ import java.io.ByteArrayOutputStream
 
 class WebServer(private val context: Context) {
 
-    private var server: NettyApplicationEngine? = null
+    private var server: EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration>? = null
     private val locationService = LocationService(context)
     private val orientationService = OrientationService(context)
     private val cameraService = CameraService(context)
@@ -51,7 +52,8 @@ class WebServer(private val context: Context) {
             try {
                 server = embeddedServer(Netty, port = port) {
                     configureServer()
-                }.start(wait = false)
+                }
+                server?.start(wait = false)
                 
                 Timber.d("Web server started on port $port")
             } catch (e: Exception) {
@@ -666,15 +668,20 @@ class WebServer(private val context: Context) {
                         }
                         
                         if (model.needsAuth) {
-                            call.respond(
-                                HttpStatusCode.BadRequest,
-                                me.bechberger.phoneserver.ai.AIErrorResponse(
-                                    error = "Model requires authentication",
-                                    code = "AUTH_REQUIRED",
-                                    details = "Model '${model.modelName}' requires manual download from ${model.url}"
+                            val hfManager = HuggingFaceTokenManager.getInstance(this@WebServer.context)
+                            if (!hfManager.hasToken()) {
+                                call.respond(
+                                    HttpStatusCode.Unauthorized,
+                                    me.bechberger.phoneserver.ai.AIErrorResponse(
+                                        error = "HuggingFace token required",
+                                        code = "AUTH_REQUIRED",
+                                        details = "Model '${model.modelName}' is gated and requires a HuggingFace access token. " +
+                                            "Set your token via POST /settings/hf-token and make sure you have accepted the model license at ${model.licenseUrl}"
+                                    )
                                 )
-                            )
-                            return@post
+                                return@post
+                            }
+                            Timber.d("Using stored HF token for authenticated download of ${model.modelName}")
                         }
                         
                         // Check if model is already downloaded
@@ -1652,6 +1659,46 @@ class WebServer(private val context: Context) {
             }
             
             // Simple root endpoint
+            // ── HuggingFace token settings ────────────────────────────────────
+            route("/settings/hf-token") {
+
+                /** GET /settings/hf-token — check whether a token is stored */
+                get {
+                    val manager = HuggingFaceTokenManager.getInstance(this@WebServer.context)
+                    call.respond(mapOf(
+                        "hasToken" to manager.hasToken(),
+                        "maskedToken" to (manager.getMaskedToken() ?: ""),
+                        "info" to "Set your HuggingFace access token to enable direct download of gated models (e.g. Gemma 4). " +
+                            "Tokens start with 'hf_'. You can generate one at https://huggingface.co/settings/tokens"
+                    ))
+                }
+
+                /** POST /settings/hf-token {"token": "hf_..."} — save token */
+                post {
+                    data class TokenRequest(val token: String)
+                    try {
+                        val req = call.receive<TokenRequest>()
+                        if (req.token.isBlank()) {
+                            call.respond(HttpStatusCode.BadRequest, mapOf("error" to "token must not be empty"))
+                            return@post
+                        }
+                        HuggingFaceTokenManager.getInstance(this@WebServer.context).setToken(req.token)
+                        call.respond(mapOf(
+                            "success" to true,
+                            "message" to "HuggingFace token saved. You can now download gated models via POST /ai/models/download."
+                        ))
+                    } catch (e: Exception) {
+                        call.respond(HttpStatusCode.BadRequest, mapOf("error" to "Invalid request body. Expected: {\"token\": \"hf_...\"}"))
+                    }
+                }
+
+                /** DELETE /settings/hf-token — remove stored token */
+                delete {
+                    HuggingFaceTokenManager.getInstance(this@WebServer.context).clearToken()
+                    call.respond(mapOf("success" to true, "message" to "HuggingFace token removed"))
+                }
+            }
+
             get("/") {
                 call.respond(mapOf(
                     "server" to "AI Phone Server",

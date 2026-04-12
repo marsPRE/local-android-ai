@@ -6,10 +6,10 @@ import android.util.Log
 import com.google.ai.edge.litertlm.Backend as LiteRTBackend
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
-import com.google.ai.edge.litertlm.Conversation
-import com.google.ai.edge.litertlm.ConversationConfig
+import com.google.ai.edge.litertlm.InputData
+import com.google.ai.edge.litertlm.ResponseCallback
 import com.google.ai.edge.litertlm.SamplerConfig
-import com.google.ai.edge.litertlm.Message
+import com.google.ai.edge.litertlm.SessionConfig
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.tasks.genai.llminference.GraphOptions
@@ -38,7 +38,6 @@ class AIInferenceService private constructor(
     
     // LiteRT-LM components
     private var litertEngine: Engine? = null
-    private var litertConversation: Conversation? = null
     
     private val tag = "AIInferenceService"
     
@@ -131,39 +130,78 @@ class AIInferenceService private constructor(
     private fun initializeLiteRTLM() {
         val modelFile = ModelDetector.getModelFile(context, model)
             ?: throw ModelNotDownloadedException("Model file not found for ${model.modelName}")
-        
+
         val modelPath = modelFile.absolutePath
-        
+
         Timber.d("Loading LiteRT-LM model: ${model.modelName}")
         Timber.d("  Path: $modelPath")
         Timber.d("  Size: ${formatBytes(modelFile.length())}")
-        
-        // Always use GPU for Gemma 4 if available, otherwise CPU
-        val backend = LiteRTBackend.GPU
-        
-        val engineConfig = EngineConfig(
-            modelPath = modelPath,
-            backend = backend,
-            cacheDir = context.cacheDir.path
+
+        // Copy GPU dispatch plugins to model directory so LiteRT's dispatch scanner can find them.
+        // LiteRT scans the model's parent directory for .so dispatch plugins at runtime.
+        val nativeLibDir = File(context.applicationInfo.nativeLibraryDir)
+        val modelDir = modelFile.parentFile
+        if (modelDir != null) {
+            // APK-bundled dispatch plugins
+            val apkLibs = listOf("libLiteRtOpenClAccelerator.so", "libLiteRtRuntimeCApi.so")
+            // Pixel-specific EdgeTPU/Tensor dispatch plugins from vendor partition
+            val vendorLibs = listOf(
+                "/vendor/lib64/libedgetpu_litert.so",
+                "/vendor/lib64/libedgetpu_util.so"
+            )
+            (apkLibs.map { File(nativeLibDir, it) } +
+             vendorLibs.map { File(it) }).forEach { src ->
+                val dst = File(modelDir, src.name)
+                if (src.exists() && !dst.exists()) {
+                    try {
+                        src.copyTo(dst)
+                        Timber.d("Copied dispatch plugin ${src.name} to model directory")
+                    } catch (e: Exception) {
+                        Timber.w("Failed to copy dispatch plugin ${src.name}: ${e.message}")
+                    }
+                }
+            }
+        }
+
+        // Use all available CPU cores for multi-threaded inference
+        val numThreads = Runtime.getRuntime().availableProcessors()
+        Timber.d("Device has $numThreads CPU cores available")
+
+        // Try backends in order: NPU → GpuArtisan (Pixel Tensor) → GPU (OpenCL) → CPU (multi-threaded)
+        // GPU is faster than CPU even for CPU-constrained model sections because OpenCL
+        // handles the heavy transformer matrix ops, while CPU-constrained sections are few.
+        val backendsToTry = listOf(
+            LiteRTBackend.NPU(context.applicationInfo.nativeLibraryDir),
+            LiteRTBackend.GpuArtisan(),
+            LiteRTBackend.GPU(),
+            LiteRTBackend.CPU(numThreads)
         )
-        
-        litertEngine = Engine(engineConfig)
-        litertEngine?.initialize()
-        
-        // Create conversation with sampler config
-        val samplerConfig = SamplerConfig(
-            topK = model.topK,
-            topP = model.topP.toDouble(),
-            temperature = model.temperature.toDouble()
-        )
-        
-        val conversationConfig = ConversationConfig(
-            samplerConfig = samplerConfig
-        )
-        
-        litertConversation = litertEngine?.createConversation(conversationConfig)
-        
-        Timber.i("LiteRT-LM engine created for ${model.modelName}")
+
+        var lastError: Exception? = null
+        for (backend in backendsToTry) {
+            try {
+                Timber.d("Trying LiteRT-LM backend: ${backend::class.simpleName}")
+                // Match Edge Gallery config: only set cacheDir for temp paths
+                val cacheDir = if (modelPath.startsWith("/data/local/tmp"))
+                    context.getExternalFilesDir(null)?.absolutePath
+                else null
+                val engineConfig = EngineConfig(
+                    modelPath = modelPath,
+                    backend = backend,
+                    maxNumTokens = model.maxTokens,
+                    cacheDir = cacheDir
+                )
+                val engine = Engine(engineConfig)
+                engine.initialize()
+                litertEngine = engine
+                Timber.i("LiteRT-LM engine initialized with backend: ${backend::class.simpleName}")
+                return
+            } catch (e: Exception) {
+                Timber.w("Backend ${backend::class.simpleName} failed: ${e.message}, trying next...")
+                lastError = e
+            }
+        }
+        throw AIServiceException("All LiteRT-LM backends failed", lastError)
     }
     
     /**
@@ -256,7 +294,7 @@ class AIInferenceService private constructor(
     }
     
     /**
-     * Generate text using LiteRT-LM
+     * Generate text using LiteRT-LM (Session API, litertlm 0.10.0+)
      */
     private fun generateTextLiteRTLM(
         prompt: String,
@@ -265,32 +303,46 @@ class AIInferenceService private constructor(
         topP: Float? = null,
         progressCallback: ((String, Boolean) -> Unit)? = null
     ): String {
-        val conversation = litertConversation
-            ?: throw AIServiceException("LiteRT-LM conversation not initialized")
-        
-        // Update sampler config if parameters changed
-        if (temperature != null || topK != null || topP != null) {
-            val newSamplerConfig = SamplerConfig(
-                topK = topK ?: model.topK,
-                topP = (topP ?: model.topP).toDouble(),
-                temperature = (temperature ?: model.temperature).toDouble()
-            )
-            // Note: LiteRT-LM doesn't support dynamic config changes, would need new conversation
-            Timber.d("Dynamic parameter changes require new conversation in LiteRT-LM")
-        }
-        
-        val userMessage = Message.of(prompt)
-        
-        // Use streaming if callback provided
-        return if (progressCallback != null) {
-            val responseBuilder = StringBuilder()
-            conversation.generateResponse(userMessage) { partialResponse, isDone ->
-                responseBuilder.append(partialResponse)
-                progressCallback.invoke(responseBuilder.toString(), isDone)
+        val engine = litertEngine
+            ?: throw AIServiceException("LiteRT-LM engine not initialized")
+
+        val samplerConfig = SamplerConfig(
+            topK = topK ?: model.topK,
+            topP = (topP ?: model.topP).toDouble(),
+            temperature = (temperature ?: model.temperature).toDouble()
+        )
+        val session = engine.createSession(SessionConfig(samplerConfig))
+        val input = listOf(InputData.Text(prompt))
+
+        return session.use {
+            if (progressCallback != null) {
+                val responseBuilder = StringBuilder()
+                val latch = java.util.concurrent.CountDownLatch(1)
+                var generationError: Throwable? = null
+
+                session.generateContentStream(input, object : ResponseCallback {
+                    override fun onNext(token: String) {
+                        responseBuilder.append(token)
+                        // Send delta only (new token), matching MediaPipe ProgressListener contract
+                        progressCallback.invoke(token, false)
+                    }
+                    override fun onDone() {
+                        // Send empty delta with isDone=true, matching MediaPipe behavior
+                        progressCallback.invoke("", true)
+                        latch.countDown()
+                    }
+                    override fun onError(e: Throwable) {
+                        generationError = e
+                        latch.countDown()
+                    }
+                })
+
+                latch.await(5, java.util.concurrent.TimeUnit.MINUTES)
+                generationError?.let { throw AIServiceException("LiteRT-LM generation failed", it) }
+                responseBuilder.toString()
+            } else {
+                session.generateContent(input)
             }
-            responseBuilder.toString()
-        } else {
-            conversation.generateResponse(userMessage)
         }
     }
     
@@ -410,15 +462,8 @@ class AIInferenceService private constructor(
                         createMediaPipeSession()
                     }
                     ModelFormat.LITERT_LM -> {
-                        litertConversation?.close()
-                        val samplerConfig = SamplerConfig(
-                            topK = model.topK,
-                            topP = model.topP.toDouble(),
-                            temperature = model.temperature.toDouble()
-                        )
-                        litertConversation = litertEngine?.createConversation(
-                            ConversationConfig(samplerConfig = samplerConfig)
-                        )
+                        // Sessions are created per-call; nothing to reset on the engine
+                        Timber.d("LiteRT-LM session reset (no-op, sessions are per-call)")
                     }
                 }
                 Timber.d("Session reset")
@@ -440,8 +485,8 @@ class AIInferenceService private constructor(
                     llmInference?.close()
                 }
                 ModelFormat.LITERT_LM -> {
-                    litertConversation?.close()
                     litertEngine?.close()
+                    litertEngine = null
                 }
             }
             Timber.d("AI inference service closed")

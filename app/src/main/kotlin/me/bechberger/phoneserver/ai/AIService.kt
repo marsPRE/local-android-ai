@@ -14,6 +14,7 @@ import kotlinx.coroutines.withTimeout
 import timber.log.Timber
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.net.HttpURLConnection
 import java.net.URL
 
 /**
@@ -381,7 +382,7 @@ class AIService(private val context: Context) {
                 // Run a simple test inference
                 val testOutput = try {
                     testInferenceService.generateText(
-                        prompt = "Create a Python Hello World program",
+                        prompt = formatTestPrompt(model, "Say hello in one sentence."),
                         temperature = 0.7f,
                         topK = 40,
                         topP = 0.95f
@@ -535,23 +536,20 @@ class AIService(private val context: Context) {
                     )
                 }
                 
-                // Run a simple test inference with streaming
-                var fullOutput = ""
-                var accumulatedText = "" // Simple accumulation like gallery
+                // Run a simple test inference with streaming.
+                // progressCallback contract: partialResult = delta (new tokens only), matching MediaPipe.
+                var accumulatedText = ""
                 val testOutput = try {
+                    val formattedPrompt = formatTestPrompt(model, prompt)
                     testInferenceService.generateText(
-                        prompt = prompt,
+                        prompt = formattedPrompt,
                         temperature = temperature ?: 0.7f,
                         topK = topK ?: 40,
                         topP = topP ?: 0.95f
-                    ) { partialResult, isDone ->
-                        fullOutput = partialResult
-                        
-                        // Direct concatenation like gallery: accumulatedText = "$accumulatedText$partialResult"
-                        accumulatedText = "$accumulatedText$partialResult"
-                        
+                    ) { delta, isDone ->
+                        accumulatedText += delta
+
                         if (isDone) {
-                            // Send completion chunk
                             val completeChunk = ModelTestStreamChunk(
                                 type = "complete",
                                 fullText = accumulatedText,
@@ -561,10 +559,9 @@ class AIService(private val context: Context) {
                             )
                             onProgress(completeChunk)
                         } else {
-                            // Send token chunk with accumulated text
                             val tokenChunk = ModelTestStreamChunk(
                                 type = "token",
-                                token = partialResult,
+                                token = delta,
                                 fullText = accumulatedText,
                                 model = model.modelName
                             )
@@ -867,9 +864,16 @@ class AIService(private val context: Context) {
                 }
                 
                 // Download the file
-                val connection = URL(url).openConnection()
+                val connection = URL(url).openConnection() as HttpURLConnection
                 connection.connectTimeout = 30000 // 30 seconds
                 connection.readTimeout = 300000 // 5 minutes
+
+                // Attach HuggingFace token if available (needed for gated models)
+                val hfToken = HuggingFaceTokenManager.getInstance(context).getToken()
+                if (hfToken != null && url.contains("huggingface.co")) {
+                    connection.setRequestProperty("Authorization", "Bearer $hfToken")
+                    Timber.d("Using HuggingFace token for authenticated download")
+                }
                 
                 val totalBytes = connection.contentLength.toLong()
                 Timber.d("Total download size: ${formatBytes(totalBytes)}")
@@ -1266,6 +1270,22 @@ class AIService(private val context: Context) {
     /**
      * Format bytes to human readable format
      */
+    /**
+     * Wraps a plain prompt in the correct chat template for each model family.
+     * Instruction-tuned models need these templates — without them they generate garbage.
+     */
+    private fun formatTestPrompt(model: AIModel, prompt: String): String = when {
+        model.modelName.contains("Gemma", ignoreCase = true) ->
+            "<start_of_turn>user\n$prompt<end_of_turn>\n<start_of_turn>model\n"
+        model.modelName.contains("Llama", ignoreCase = true) ->
+            "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n$prompt<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+        model.modelName.contains("TinyLlama", ignoreCase = true) ->
+            "<|system|>\n</s>\n<|user|>\n$prompt</s>\n<|assistant|>\n"
+        model.modelName.contains("DeepSeek", ignoreCase = true) ->
+            "<|User|>$prompt<|Assistant|>"
+        else -> prompt
+    }
+
     private fun formatBytes(bytes: Long): String {
         val units = arrayOf("B", "KB", "MB", "GB", "TB")
         if (bytes == 0L) return "0 B"
