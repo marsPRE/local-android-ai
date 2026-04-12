@@ -38,6 +38,7 @@ class AITestActivity : AppCompatActivity() {
     private val apiTester = ApiTester()
     private val gson = GsonBuilder().setPrettyPrinting().create()
     private lateinit var markwon: Markwon
+    private var availableModels: List<me.bechberger.phoneserver.ai.AIModel> = emptyList()
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -79,18 +80,20 @@ class AITestActivity : AppCompatActivity() {
     
     private fun setupModelSelection() {
         lifecycleScope.launch {
-            val availableModels = withContext(Dispatchers.IO) {
+            val models = withContext(Dispatchers.IO) {
                 ModelDetector.getAvailableModels(this@AITestActivity)
             }
-            
-            if (availableModels.isEmpty()) {
+
+            availableModels = models
+
+            if (models.isEmpty()) {
                 // No models available - show message
                 Toast.makeText(this@AITestActivity, "⚠️ No AI models are available. Please add models first.", Toast.LENGTH_LONG).show()
                 generateButton.isEnabled = false
                 return@launch
             }
-            
-            val modelDisplayNames = availableModels.map { "${it.modelName} (${it.fileName})" }
+
+            val modelDisplayNames = models.map { "${it.modelName} (${it.fileName})" }
             
             val modelAdapter = ArrayAdapter(this@AITestActivity, android.R.layout.simple_spinner_item, modelDisplayNames)
             modelAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
@@ -99,8 +102,8 @@ class AITestActivity : AppCompatActivity() {
             // Function to update image input visibility based on selected model
             fun updateImageInputVisibility() {
                 val selectedModelIndex = modelSpinner.selectedItemPosition
-                if (selectedModelIndex >= 0 && selectedModelIndex < availableModels.size) {
-                    val selectedModel = availableModels[selectedModelIndex]
+                if (selectedModelIndex >= 0 && selectedModelIndex < models.size) {
+                    val selectedModel = models[selectedModelIndex]
                     val isMultimodal = selectedModel.supportsVision
                     layoutImageInput.visibility = if (isMultimodal) View.VISIBLE else View.GONE
                     
@@ -169,18 +172,20 @@ class AITestActivity : AppCompatActivity() {
             Toast.makeText(this, "Please enter a prompt", Toast.LENGTH_SHORT).show()
             return
         }
-        
+
+        if (availableModels.isEmpty()) {
+            Toast.makeText(this, "No models available yet — please wait a moment and try again", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        val spinnerPos = modelSpinner.selectedItemPosition
+        if (spinnerPos < 0 || spinnerPos >= availableModels.size) {
+            Toast.makeText(this, "Please select a model", Toast.LENGTH_SHORT).show()
+            return
+        }
+
         lifecycleScope.launch {
-            val availableModels = withContext(Dispatchers.IO) {
-                ModelDetector.getAvailableModels(this@AITestActivity)
-            }
-            
-            if (availableModels.isEmpty()) {
-                Toast.makeText(this@AITestActivity, "No models available", Toast.LENGTH_SHORT).show()
-                return@launch
-            }
-            
-            val selectedModelName = availableModels[modelSpinner.selectedItemPosition].name
+            val selectedModelName = availableModels[spinnerPos].name
             val imageInputType = getSelectedImageInputType(radioGroup)
             
             // Show loading state

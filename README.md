@@ -1,22 +1,40 @@
-# AI Phone Server
+# AI Phone Server — GPU Fork
 
-A simple Android app that serves local AI models via an AI with 
-MediaPipe AI inference, object detection, and device sensors for easy integration
-with an Android terminal.
+This is a fork of [parttimenerd/local-android-ai](https://github.com/parttimenerd/local-android-ai) with added **LiteRT-LM GPU acceleration** and **Gemma 4** support, primarily targeting the **Pixel 9 Pro** (Tensor G4 with OpenCL GPU).
 
-**This is highly experimental, so use it with care and I'm not an Android Developer, so, 
-full disclosure, Google Gemini helped with the UI part.**
+> **Original project**: [parttimenerd/local-android-ai](https://github.com/parttimenerd/local-android-ai) by Johannes Bechberger — a simple Android app that serves local AI models via a REST API with MediaPipe inference, object detection, and device sensors.
+
+## What this fork adds
+
+- **LiteRT-LM backend** alongside MediaPipe — enables `.litertlm` model format
+- **GPU acceleration** (OpenCL via `LiteRTBackend.GPU()`) with automatic fallback chain: NPU → GPU → CPU
+- **Gemma 4 E2B / E4B** models (both via litert-community download and Edge Gallery import)
+- **HuggingFace token authentication** for gated models (Gemma, Llama)
+- **Performance fix**: `maxNumTokens = 1024` instead of 4096 — reduced KV cache size gives ~9× speedup (0.4 → 3.6 T/s on Pixel 9 Pro)
+- **More models**: Llama 3.2 1B/3B, DeepSeek-R1 Distill Qwen 1.5B, TinyLlama 1.1B
+- **Edge Gallery model import**: use a model downloaded by Edge Gallery directly in this app
 
 ## Download
 
-Download it from the [Releases](https://github.com/parttimenerd/local-a ndroid-ai/releases) page.
+Download the APK from the [Releases](https://github.com/marsPRE/local-android-ai/releases) page.
+
+## Performance (Pixel 9 Pro)
+
+| Model | Backend | Speed |
+|---|---|---|
+| Gemma 4 E4B IT | GPU (OpenCL) | ~3.5 T/s |
+| Gemma 4 E2B IT | GPU (OpenCL) | ~5–6 T/s |
+| DeepSeek-R1 1.5B | CPU | ~1–2 T/s |
 
 ## Features
 
 ### AI Inference
-- **LLM Support**: Gemma 4 E4B IT, Gemma 3n E2B IT, DeepSeek-R1 Distill Qwen 1.5B, Llama 3.2 (1B/3B), TinyLlama 1.1B
+- **LLM Support**: Gemma 4 E4B/E2B IT, Gemma 3n E2B IT, DeepSeek-R1 Distill Qwen 1.5B, Llama 3.2 (1B/3B), TinyLlama 1.1B
+- **Backends**: LiteRT-LM (GPU/NPU/CPU) and MediaPipe (CPU)
+- **Vision**: Multimodal input for Gemma 4 and Gemma 3n models
 - **Object Detection**: MediaPipe EfficientDet Lite 2
 - **Model Management**: Download, test, performance metrics (tokens/second)
+- **HuggingFace Auth**: Token support for gated model downloads
 - **Streaming**: Real-time token streaming with cancellation support
 
 ### Device Integration
@@ -34,12 +52,20 @@ Download it from the [Releases](https://github.com/parttimenerd/local-a ndroid-a
 ```http
 POST /ai/text
 {
-  "prompt": "text",
-  "model": "gemma-3n-e2b-it", 
-  "maxTokens": 150,
+  "text": "What is the capital of France?",
+  "model": "GEMMA_4_E4B_IT",
   "temperature": 0.7,
   "topK": 40,
   "topP": 0.95
+}
+```
+
+```http
+POST /ai/text  (with camera image)
+{
+  "text": "Describe what you see",
+  "model": "GEMMA_4_E4B_IT",
+  "captureConfig": { "camera": "rear" }
 }
 ```
 
@@ -54,24 +80,36 @@ POST /ai/object_detection
 ```
 
 ```http
-GET /ai/models
-POST /ai/models/download {"modelName": "model-name"}
-POST /ai/models/test {"modelName": "model-name", "prompt": "text"}
+GET  /ai/models
+POST /ai/models/download  {"modelName": "GEMMA_4_E4B_IT"}
+POST /ai/models/test      {"modelName": "GEMMA_4_E4B_IT", "prompt": "Hello"}
 ```
 
 ### Device & System
 ```http
-GET /orientation    # Compass: azimuth, pitch, roll, accuracy  
+GET /orientation    # Compass: azimuth, pitch, roll, accuracy
 GET /capture?side=rear&zoom=2.0  # Camera capture, base64 JPEG ⚠️ App must be visible
 GET /status         # Server status, features, permissions
-GET /help           # API documentation
+GET /help           # Full API documentation
 ```
 
-⚠️ **Camera Privacy Notice**: Camera capture requires the Android app to be visible due to Android OS privacy restrictions. This ensures users are aware when the camera is being accessed, the other endpoints work in the background.
+⚠️ **Camera Privacy Notice**: Camera capture requires the Android app to be visible (Android OS restriction). All other endpoints work in the background.
+
+## HuggingFace Token Setup
+
+Some models (Gemma, Llama) require a HuggingFace account and accepted license. Set your token in the app under **Model Manager → HuggingFace Token** or via the settings icon.
+
+1. Create a token at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)
+2. Accept the model license on HuggingFace
+3. Enter the token in the app
 
 ## Build & Install
 
 ```bash
+# Clone this fork
+git clone https://github.com/marsPRE/local-android-ai.git
+cd local-android-ai
+
 # Build APK
 ./gradlew assembleDebug
 
@@ -79,89 +117,24 @@ GET /help           # API documentation
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 # Monitor logs
-adb logcat -s "LocalAIPhoneServer" "*AI*"
+adb logcat | grep -E "AIInference|LiteRT|GPU|Backend"
 ```
+
+### Requirements
+- Android 11+ (API 30+)
+- 4 GB+ RAM recommended for Gemma 4 E4B
+- Pixel 9 / Tensor G4 for GPU acceleration (other devices fall back to CPU)
 
 ## Integration
 
-Designed for K3s cluster nodes running on Android devices. Provides REST API for cluster applications to access AI inference, device sensors, and camera functionality.
+Designed for use as a local AI backend accessible via REST — e.g. from scripts, K3s cluster nodes, or other apps on the same network.
 
-```http
-GET /health
-# Simple health check endpoint
-```
-
-```http
-GET /help
-# Complete API documentation with examples
-```
-
-## 🛠️ Build Instructions
-
-### Prerequisites
-- **Android Studio** Arctic Fox or newer (or build on-device with Termux)
-- **Android SDK** API level 30+ (Android 11+)
-- **Device Requirements**: 4GB+ RAM for Gemma 4, 3GB+ for smaller models
-- **Permissions**: Camera, Storage
-
-### Build on Pixel 9 (Termux)
 ```bash
-# In Termux on your Pixel 9
-pkg install openjdk-17 gradle android-sdk
-
-# Set SDK path
-export ANDROID_SDK_ROOT=$PREFIX/share/android-sdk
-
-# Create local.properties
-echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
-
-# Build
-./gradlew assembleDebug
-
-# Install locally
-./gradlew installDebug
+curl -X POST http://<phone-ip>:8005/ai/text \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Hello", "model": "GEMMA_4_E4B_IT"}'
 ```
-
-### Cross-Build for Pixel 9
-```bash
-# On your development machine
-export ANDROID_SDK_ROOT=/path/to/android-sdk
-
-# Create local.properties
-echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
-
-# Build debug APK with GPU support
-./gradlew assembleDebug
-
-# Install on Pixel 9 via ADB
-adb install -r app/build/outputs/apk/debug/app-debug.apk
-```
-
-### Building the App
-```bash
-# Clone the repository
-git clone <repository-url>
-cd android
-
-# Build debug APK
-./gradlew assembleDebug
-
-# Install on connected device  
-./gradlew installDebug
-
-# Build release APK
-./gradlew assembleRelease
-```
-
-### Debug Information
-The `/status` endpoint provides comprehensive debug information including:
-- Current AI model status and memory usage
-- Permission status for all features
-- Available device memory and requirements
-- Feature availability and configuration
-
-## TODO
-- Location isn't working
 
 ## License
-Apache 2.0
+
+Apache 2.0 — same as the original project.
