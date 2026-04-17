@@ -38,7 +38,7 @@ class AITestActivity : AppCompatActivity() {
     private val apiTester = ApiTester()
     private val gson = GsonBuilder().setPrettyPrinting().create()
     private lateinit var markwon: Markwon
-    private var availableModels: List<me.bechberger.phoneserver.ai.AIModel> = emptyList()
+    private var availableModels: List<me.bechberger.phoneserver.ai.AIModelConfig> = emptyList()
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -185,7 +185,7 @@ class AITestActivity : AppCompatActivity() {
         }
 
         lifecycleScope.launch {
-            val selectedModelName = availableModels[spinnerPos].name
+            val selectedModelName = availableModels[spinnerPos].id
             val imageInputType = getSelectedImageInputType(radioGroup)
             
             // Show loading state

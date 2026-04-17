@@ -21,7 +21,10 @@ import android.widget.Toast
 import androidx.recyclerview.widget.RecyclerView
 import me.bechberger.phoneserver.R
 import me.bechberger.phoneserver.ai.AIModel
+import me.bechberger.phoneserver.ai.AIModelConfig
+import me.bechberger.phoneserver.ai.AIModelRegistry
 import me.bechberger.phoneserver.ai.AIService
+import me.bechberger.phoneserver.ai.DynamicAIModel
 import me.bechberger.phoneserver.ai.ModelDetector
 import me.bechberger.phoneserver.ai.ModelFileInfo
 import kotlinx.coroutines.CoroutineScope
@@ -36,14 +39,14 @@ import java.io.File
  */
 class AIModelAdapter(
     private val context: Context,
-    private var models: List<AIModel>,
+    private var models: List<AIModelConfig>,
     private val aiService: AIService,
-    private val onLoadFileRequested: (AIModel) -> Unit,
-    private val onTestRequested: (AIModel) -> Unit,
+    private val onLoadFileRequested: (AIModelConfig) -> Unit,
+    private val onTestRequested: (AIModelConfig) -> Unit,
     private val onRefreshRequested: () -> Unit
 ) : RecyclerView.Adapter<AIModelAdapter.ModelViewHolder>() {
 
-    private var modelInfoMap = mutableMapOf<AIModel, ModelFileInfo>()
+    private var modelInfoMap = mutableMapOf<AIModelConfig, ModelFileInfo>()
     private var processingModels = mutableSetOf<String>()
     private var downloadingModels = mutableMapOf<String, Int>() // modelName -> progress percentage
 
@@ -261,32 +264,25 @@ class AIModelAdapter(
 
     override fun getItemCount(): Int = models.size
 
-    private fun showDownloadDialog(model: AIModel) {
+    private fun showDownloadDialog(model: AIModelConfig) {
+        val staticModel = model as? AIModel
         val message = buildString {
             append("Download ${model.modelName}?\n\n")
             append("📱 Model: ${model.modelName}\n")
             append("📄 File: ${model.fileName}\n")
-            
-            // Add capabilities info
-            append("\n✨ Capabilities: ")
-            val capabilities = mutableListOf<String>()
-            capabilities.add("Text")
+            val capabilities = mutableListOf("Text")
             if (model.supportsVision) capabilities.add("Vision")
             if (model.thinking) capabilities.add("Reasoning")
-            append(capabilities.joinToString(", "))
-            append("\n")
-            
-            append("🔗 Source: ${model.url}\n\n")
-            if (model.needsAuth) {
-                append("⚠️ This model requires authentication on Hugging Face. You'll need to:")
-                append("\n1. Log in to Hugging Face")
-                append("\n2. Accept the model license")
-                append("\n3. Download manually")
-                append("\n\nThis dialog will open the model source page.")
+            append("\n✨ Capabilities: ${capabilities.joinToString(", ")}\n")
+            if (staticModel != null) {
+                append("🔗 Source: ${staticModel.url}\n\n")
+                if (model.needsAuth) {
+                    append("⚠️ Requires Hugging Face auth.\n1. Log in\n2. Accept license\n3. Download manually")
+                } else {
+                    append("✅ Can be downloaded directly!")
+                }
             } else {
-                append("✅ This model can be downloaded directly!")
-                append("\n• Click 'Download' to start downloading")
-                append("\n• Or click 'Open Browser' to download manually")
+                append("\nThis is a locally imported model.")
             }
         }
 
@@ -294,88 +290,66 @@ class AIModelAdapter(
             .setTitle("Download AI Model")
             .setMessage(message)
             .setNegativeButton("Cancel", null)
-            
-        if (model.needsAuth) {
-            // Auth models: just open browser to source page
-            dialogBuilder.setPositiveButton("🌐 Open Source") { _, _ ->
-                openDownloadUrl(model)
-            }
-        } else {
-            // Non-auth models: offer direct download + browser option
-            dialogBuilder.setPositiveButton("📥 Download") { _, _ ->
-                startDirectDownload(model)
-            }
-            dialogBuilder.setNeutralButton("🌐 Open Browser") { _, _ ->
-                openDownloadUrl(model)
+
+        if (staticModel != null) {
+            if (model.needsAuth) {
+                dialogBuilder.setPositiveButton("🌐 Open Source") { _, _ -> openDownloadUrl(model) }
+            } else {
+                dialogBuilder.setPositiveButton("📥 Download") { _, _ -> startDirectDownload(model) }
+                dialogBuilder.setNeutralButton("🌐 Open Browser") { _, _ -> openDownloadUrl(model) }
             }
         }
-        
         dialogBuilder.show()
     }
 
-    private fun startDirectDownload(model: AIModel) {
-        // For non-auth models, start direct download with progress tracking
+    private fun startDirectDownload(model: AIModelConfig) {
+        val staticModel = model as? AIModel ?: return
         downloadingModels[model.modelName] = 0
         notifyDataSetChanged()
-        
         Toast.makeText(context, "Starting download of ${model.modelName}...", Toast.LENGTH_SHORT).show()
-        
-        // Start download in background
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                val result = aiService.downloadModel(model) { bytesDownloaded, totalBytes, percentage ->
-                    // Update progress on main thread
+                val result = aiService.downloadModel(staticModel) { _, _, percentage ->
                     CoroutineScope(Dispatchers.Main).launch {
                         downloadingModels[model.modelName] = percentage
                         notifyDataSetChanged()
                     }
                 }
-                
                 withContext(Dispatchers.Main) {
                     downloadingModels.remove(model.modelName)
-                    
                     if (result.success) {
                         Toast.makeText(context, "✅ ${model.modelName} downloaded successfully!", Toast.LENGTH_LONG).show()
-                        
-                        // Refresh model info to show the new status
                         refreshModelInfo()
-                        
-                        // Auto-load the model after successful download
                         setModelProcessing(model, true)
                         testModelAfterDownload(model)
                     } else {
                         Toast.makeText(context, "❌ Download failed: ${result.message}", Toast.LENGTH_LONG).show()
                     }
-                    
                     notifyDataSetChanged()
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     downloadingModels.remove(model.modelName)
                     notifyDataSetChanged()
-                    
                     Timber.e(e, "Download failed for ${model.modelName}")
                     Toast.makeText(context, "❌ Download failed: ${e.message}", Toast.LENGTH_LONG).show()
                 }
             }
         }
     }
-    
-    private fun testModelAfterDownload(model: AIModel) {
-        // Test the model to ensure it loaded properly
+
+    private fun testModelAfterDownload(model: AIModelConfig) {
+        val staticModel = model as? AIModel ?: return
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                val testResult = aiService.testModel(model)
-                
+                val testResult = aiService.testModel(staticModel)
                 withContext(Dispatchers.Main) {
                     setModelProcessing(model, false)
-                    
                     if (testResult.success) {
                         Toast.makeText(context, "🤖 ${model.modelName} is ready to use!", Toast.LENGTH_LONG).show()
                     } else {
                         Toast.makeText(context, "⚠️ Model downloaded but test failed: ${testResult.message}", Toast.LENGTH_LONG).show()
                     }
-                    
                     refreshModelInfo()
                     notifyDataSetChanged()
                 }
@@ -384,7 +358,6 @@ class AIModelAdapter(
                     setModelProcessing(model, false)
                     refreshModelInfo()
                     notifyDataSetChanged()
-                    
                     Timber.e(e, "Model test failed after download")
                     Toast.makeText(context, "⚠️ Model downloaded but couldn't be tested", Toast.LENGTH_SHORT).show()
                 }
@@ -392,19 +365,17 @@ class AIModelAdapter(
         }
     }
 
-    private fun openDownloadUrl(model: AIModel) {
+    private fun openDownloadUrl(model: AIModelConfig) {
+        val staticModel = model as? AIModel ?: return
         try {
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(model.url))
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(staticModel.url))
             context.startActivity(intent)
-            
-            // Show help message
             val helpMessage = if (model.needsAuth) {
                 "After downloading, use 'Load File' to import the model."
             } else {
                 "After downloading, use 'Load File' to import the model to the app."
             }
             Toast.makeText(context, helpMessage, Toast.LENGTH_LONG).show()
-            
         } catch (e: Exception) {
             Timber.e(e, "Failed to open download URL")
             Toast.makeText(context, "Failed to open browser", Toast.LENGTH_SHORT).show()
@@ -422,7 +393,7 @@ class AIModelAdapter(
         }
     }
 
-    private fun showDeleteConfirmation(model: AIModel, holder: ModelViewHolder) {
+    private fun showDeleteConfirmation(model: AIModelConfig, holder: ModelViewHolder) {
         val fileInfo = modelInfoMap[model]
         val message = "Delete ${model.modelName}?\n\nThis will remove the ${fileInfo?.getFormattedSize() ?: "model"} file from your device."
 
@@ -436,20 +407,25 @@ class AIModelAdapter(
             .show()
     }
 
-    private fun deleteModel(model: AIModel) {
+    private fun deleteModel(model: AIModelConfig) {
         try {
-            // Remove the reference file
-            val referenceRemoved = ModelDetector.removeModelReference(context, model)
-            if (referenceRemoved) {
-                Toast.makeText(context, "Removed ${model.modelName} reference", Toast.LENGTH_SHORT).show()
-                refreshModelInfo()
-                notifyDataSetChanged()
-                onRefreshRequested()
+            if (model is DynamicAIModel) {
+                AIModelRegistry.removeDynamicModel(context, model.id)
+                Toast.makeText(context, "Removed ${model.modelName}", Toast.LENGTH_SHORT).show()
             } else {
-                Toast.makeText(context, "Failed to remove model reference", Toast.LENGTH_SHORT).show()
+                val referenceRemoved = ModelDetector.removeModelReference(context, model)
+                if (referenceRemoved) {
+                    Toast.makeText(context, "Removed ${model.modelName} reference", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(context, "Failed to remove model reference", Toast.LENGTH_SHORT).show()
+                    return
+                }
             }
+            refreshModelInfo()
+            notifyDataSetChanged()
+            onRefreshRequested()
         } catch (e: Exception) {
-            Timber.e(e, "Failed to remove model reference")
+            Timber.e(e, "Failed to remove model")
             Toast.makeText(context, "Error deleting model: ${e.message}", Toast.LENGTH_SHORT).show()
         }
     }
@@ -494,13 +470,13 @@ class AIModelAdapter(
         }
     }
 
-    fun updateModels(newModels: List<AIModel>) {
+    fun updateModels(newModels: List<AIModelConfig>) {
         models = newModels
         refreshModelInfo()
         notifyDataSetChanged()
     }
 
-    fun setModelProcessing(model: AIModel, isProcessing: Boolean) {
+    fun setModelProcessing(model: AIModelConfig, isProcessing: Boolean) {
         if (isProcessing) {
             processingModels.add(model.modelName)
         } else {

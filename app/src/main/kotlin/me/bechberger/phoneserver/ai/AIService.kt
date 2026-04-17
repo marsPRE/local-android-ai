@@ -34,7 +34,7 @@ class AIService(private val context: Context) {
     private val sharedCameraService = SharedCameraService(context)
     private val persistenceManager = ModelPersistenceManager.getInstance(context)
     private var currentInferenceService: AIInferenceService? = null
-    private var currentModel: AIModel? = null
+    private var currentModel: AIModelConfig? = null
     private var modelLoadedAt: Long? = null
     
     // Processing state tracking
@@ -66,14 +66,14 @@ class AIService(private val context: Context) {
                 processingStartTime = System.currentTimeMillis()
                 
                 // Get or validate model
-                val model = AIModel.fromString(request.model) 
-                    ?: AIModel.fromString(DEFAULT_MODEL)
-                    ?: throw AIServiceException("Invalid model: ${request.model}. Available models: ${AIModel.getAllModels().joinToString(", ") { it.name }}")
+                val model = AIModelRegistry.fromString(request.model, context)
+                    ?: AIModelRegistry.fromString(DEFAULT_MODEL, context)
+                    ?: throw AIServiceException("Invalid model: ${request.model}. Available models: ${AIModelRegistry.getAllModels(context).joinToString(", ") { it.id }}")
                 
                 // Ensure model is available in assets
                 if (!ModelDetector.isModelAvailable(context, model)) {
                     val availableModels = ModelDetector.getAvailableModels(context)
-                    val availableNames = availableModels.joinToString(", ") { it.name }
+                    val availableNames = availableModels.joinToString(", ") { it.id }
                     throw ModelNotDownloadedException("Model ${model.modelName} (${model.fileName}) is not available. Please download it first. Available models: [$availableNames]")
                 }
                 
@@ -316,7 +316,7 @@ class AIService(private val context: Context) {
     /**
      * Test if a model can be loaded and used for basic inference
      */
-    suspend fun testModel(model: AIModel): ModelTestResult {
+    suspend fun testModel(model: AIModelConfig): ModelTestResult {
         return withContext(Dispatchers.IO) {
             val startTime = System.currentTimeMillis()
             
@@ -459,7 +459,7 @@ class AIService(private val context: Context) {
      * Test a model with streaming token output
      */
     suspend fun testModelStreaming(
-        model: AIModel,
+        model: AIModelConfig,
         prompt: String = "Ping",
         temperature: Float? = null,
         topK: Int? = null,
@@ -654,12 +654,12 @@ class AIService(private val context: Context) {
      * Get supported models with availability status
      */
     fun getSupportedModels(): SupportedModelsResponse {
-        val models = AIModel.getAllModels().map { model ->
+        val models = AIModelRegistry.getAllModels(context).map { model ->
             val isAvailable = ModelDetector.isModelAvailable(context, model)
-            val isCurrentlyLoaded = currentModel?.name == model.name
-            
+            val isCurrentlyLoaded = currentModel?.id == model.id
+
             ModelInfo(
-                name = model.name,
+                name = model.id,
                 displayName = model.modelName,
                 description = model.description,
                 needsLicense = model.licenseUrl.isNotEmpty(),
@@ -680,11 +680,11 @@ class AIService(private val context: Context) {
      */
     fun getStatus(): AIServiceStatus {
         val availableModels = ModelDetector.getAvailableModels(context).size
-        val totalModels = AIModel.getAllModels().size
-        
+        val totalModels = AIModelRegistry.getAllModels(context).size
+
         val currentModelDetails = currentModel?.let { model ->
             LoadedModelInfo(
-                name = model.name,
+                name = model.id,
                 displayName = model.modelName,
                 description = model.description,
                 supportsVision = model.supportsVision,
@@ -1116,7 +1116,7 @@ class AIService(private val context: Context) {
     /**
      * Create AI inference service with timeout protection
      */
-    private suspend fun createInferenceServiceWithTimeout(model: AIModel): AIInferenceService {
+    private suspend fun createInferenceServiceWithTimeout(model: AIModelConfig): AIInferenceService {
         return withContext(Dispatchers.IO) {
             val startTime = System.currentTimeMillis()
             
@@ -1274,7 +1274,7 @@ class AIService(private val context: Context) {
      * Wraps a plain prompt in the correct chat template for each model family.
      * Instruction-tuned models need these templates — without them they generate garbage.
      */
-    private fun formatTestPrompt(model: AIModel, prompt: String): String = when {
+    private fun formatTestPrompt(model: AIModelConfig, prompt: String): String = when {
         model.modelName.contains("Gemma", ignoreCase = true) ->
             "<start_of_turn>user\n$prompt<end_of_turn>\n<start_of_turn>model\n"
         model.modelName.contains("Llama", ignoreCase = true) ->

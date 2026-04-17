@@ -13,6 +13,7 @@ import me.bechberger.phoneserver.services.LocationService
 import me.bechberger.phoneserver.services.OrientationService
 import me.bechberger.phoneserver.ai.AIService
 import me.bechberger.phoneserver.ai.AIModel
+import me.bechberger.phoneserver.ai.AIModelRegistry
 import me.bechberger.phoneserver.ai.AIErrorDiagnostics
 import me.bechberger.phoneserver.ai.HuggingFaceTokenManager
 import me.bechberger.phoneserver.ai.ModelDetector
@@ -653,7 +654,7 @@ class WebServer(private val context: Context) {
                         }
                         
                         val request = call.receive<ModelDownloadRequest>()
-                        val model = AIModel.fromString(request.modelName)
+                        val model = AIModelRegistry.fromString(request.modelName, context)
                         
                         if (model == null) {
                             call.respond(
@@ -753,7 +754,7 @@ class WebServer(private val context: Context) {
                             )
                         )
                         
-                        val model = AIModel.fromString(modelName)
+                        val model = AIModelRegistry.fromString(modelName, context)
                         if (model == null) {
                             call.respond(
                                 HttpStatusCode.NotFound,
@@ -805,7 +806,7 @@ class WebServer(private val context: Context) {
                                 "hasStoragePermissions" to permissionManager.hasStoragePermissions(this@WebServer.context),
                                 "hasEnhancedStoragePermissions" to permissionManager.hasEnhancedStoragePermissions(this@WebServer.context),
                                 "availableModels" to ModelDetector.getAvailableModels(this@WebServer.context).size,
-                                "totalModels" to AIModel.getAllModels().size,
+                                "totalModels" to AIModelRegistry.getAllModels(this@WebServer.context).size,
                                 "androidVersion" to android.os.Build.VERSION.SDK_INT
                             )
                         ))
@@ -856,7 +857,7 @@ class WebServer(private val context: Context) {
                             )
                         )
                         
-                        val model = AIModel.fromString(modelName)
+                        val model = AIModelRegistry.fromString(modelName, context)
                         if (model == null) {
                             call.respond(
                                 HttpStatusCode.NotFound,
@@ -936,7 +937,7 @@ class WebServer(private val context: Context) {
                             )
                         )
                         
-                        val model = AIModel.fromString(modelName)
+                        val model = AIModelRegistry.fromString(modelName, context)
                         if (model == null) {
                             call.respond(
                                 HttpStatusCode.NotFound,

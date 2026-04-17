@@ -97,18 +97,25 @@ object ModelDetector {
      * Mark a model as failed for testing
      */
     fun markModelAsFailed(context: Context, model: AIModel) {
-        failedModels.add(model.name)
-        // Also persist to SharedPreferences
+        markModelAsFailed(context, model as AIModelConfig)
+    }
+
+    fun markModelAsFailed(context: Context, model: AIModelConfig) {
+        failedModels.add(model.id)
         val prefs = context.getSharedPreferences("ai_model_prefs", Context.MODE_PRIVATE)
         prefs.edit().putStringSet(FAILED_MODELS_PREF, failedModels).apply()
         Timber.w("Marked model as failed: ${model.modelName}")
     }
-    
+
     /**
      * Clear failed status for a model
      */
     fun clearModelFailedStatus(context: Context, model: AIModel) {
-        failedModels.remove(model.name)
+        clearModelFailedStatus(context, model as AIModelConfig)
+    }
+
+    fun clearModelFailedStatus(context: Context, model: AIModelConfig) {
+        failedModels.remove(model.id)
         val prefs = context.getSharedPreferences("ai_model_prefs", Context.MODE_PRIVATE)
         prefs.edit().putStringSet(FAILED_MODELS_PREF, failedModels).apply()
         Timber.d("Cleared failed status for model: ${model.modelName}")
@@ -127,11 +134,13 @@ object ModelDetector {
     /**
      * Check if a model has been marked as failed
      */
-    fun isModelFailed(context: Context, model: AIModel): Boolean {
+    fun isModelFailed(context: Context, model: AIModel): Boolean = isModelFailed(context, model as AIModelConfig)
+
+    fun isModelFailed(context: Context, model: AIModelConfig): Boolean {
         if (failedModels.isEmpty()) {
             loadFailedModels(context)
         }
-        return failedModels.contains(model.name)
+        return failedModels.contains(model.id)
     }
     
     /**
@@ -229,7 +238,10 @@ object ModelDetector {
     /**
      * Create a reference file for a model pointing to its actual location
      */
-    fun createModelReference(context: Context, model: AIModel, actualModelPath: String): Boolean {
+    fun createModelReference(context: Context, model: AIModel, actualModelPath: String): Boolean =
+        createModelReference(context, model as AIModelConfig, actualModelPath)
+
+    fun createModelReference(context: Context, model: AIModelConfig, actualModelPath: String): Boolean {
         return try {
             Timber.d("🔧 Creating model reference for ${model.modelName}")
             Timber.d("   Model file name: ${model.fileName}")
@@ -360,7 +372,7 @@ object ModelDetector {
     /**
      * Read the actual model path from a reference file
      */
-    private fun readModelReference(context: Context, model: AIModel): String? {
+    private fun readModelReference(context: Context, model: AIModelConfig): String? {
         val directories = getModelRefsDirectories(context)
         val refFileName = "${model.fileName}.ref"
         
@@ -440,7 +452,9 @@ object ModelDetector {
     /**
      * Remove a model reference
      */
-    fun removeModelReference(context: Context, model: AIModel): Boolean {
+    fun removeModelReference(context: Context, model: AIModel): Boolean = removeModelReference(context, model as AIModelConfig)
+
+    fun removeModelReference(context: Context, model: AIModelConfig): Boolean {
         val directories = getModelRefsDirectories(context)
         val refFileName = "${model.fileName}.ref"
         var removed = false
@@ -494,15 +508,26 @@ object ModelDetector {
     }
     
     /**
-     * Get the file for a specific model if it exists (via reference)
-     * Now includes enhanced permission validation
+     * Get the file for a specific model if it exists.
+     * Dynamic models use their stored path directly; static models use .ref files.
      */
-    fun getModelFile(context: Context, model: AIModel): File? {
+    fun getModelFile(context: Context, model: AIModel): File? = getModelFile(context, model as AIModelConfig)
+
+    fun getModelFile(context: Context, model: AIModelConfig): File? {
+        if (model is DynamicAIModel) {
+            val file = File(model.absoluteFilePath)
+            val accessResult = validateFileAccess(file)
+            return if (accessResult.isAccessible) {
+                Timber.d("✅ Dynamic model file accessible: ${file.absolutePath}")
+                file
+            } else {
+                Timber.w("❌ Dynamic model file inaccessible: ${accessResult.message}")
+                null
+            }
+        }
         val modelPath = readModelReference(context, model)
         return if (modelPath != null) {
             val file = File(modelPath)
-            
-            // Use enhanced validation
             val accessResult = validateFileAccess(file)
             if (accessResult.isAccessible) {
                 Timber.d("✅ Model file is accessible: ${file.absolutePath}")
@@ -532,8 +557,8 @@ object ModelDetector {
      * Get list of available models based on reference files pointing to actual .task files
      * Excludes models that have been marked as failed
      */
-    fun getAvailableModels(context: Context, includeFailed: Boolean = false): List<AIModel> {
-        val availableModels = mutableListOf<AIModel>()
+    fun getAvailableModels(context: Context, includeFailed: Boolean = false): List<AIModelConfig> {
+        val availableModels = mutableListOf<AIModelConfig>()
         val directories = getModelRefsDirectories(context)
         
         Timber.v("🔍 Getting available models (includeFailed: $includeFailed)...")
@@ -544,11 +569,18 @@ object ModelDetector {
         }
         Timber.v("   Failed models loaded: ${failedModels.size} (${failedModels.joinToString(", ")})")
         
+        // Include dynamic models that have accessible files
+        val dynamicAvailable = AIModelRegistry.getDynamicModels(context).filter { dm ->
+            getModelFile(context, dm) != null &&
+                    (includeFailed || !isModelFailed(context, dm))
+        }
+        availableModels.addAll(dynamicAvailable)
+
         try {
             // Collect all .ref files from all directories
             val allRefFiles = mutableSetOf<String>()
             var totalRefCount = 0
-            
+
             for ((dirIndex, dir) in directories.withIndex()) {
                 Timber.v("   [${dirIndex + 1}/${directories.size}] Checking directory: ${dir.absolutePath}")
                 
@@ -658,24 +690,34 @@ object ModelDetector {
     }
     
     /**
-     * Check if a specific model is available via reference
+     * Check if a specific model is available
      */
-    fun isModelAvailable(context: Context, model: AIModel): Boolean {
+    fun isModelAvailable(context: Context, model: AIModel): Boolean = isModelAvailable(context, model as AIModelConfig)
+
+    fun isModelAvailable(context: Context, model: AIModelConfig): Boolean {
         return getModelFile(context, model) != null
     }
-    
+
     /**
-     * Get the full path to a model file (via reference)
+     * Get the full path to a model file
      */
-    fun getModelPath(context: Context, model: AIModel): String? {
+    fun getModelPath(context: Context, model: AIModel): String? = getModelPath(context, model as AIModelConfig)
+
+    fun getModelPath(context: Context, model: AIModelConfig): String? {
         return getModelFile(context, model)?.absolutePath
     }
-    
+
     /**
      * Get model file info with storage location
      */
-    fun getModelFileInfo(context: Context, model: AIModel): ModelFileInfo {
-        val modelFile = findModelFile(context, model.fileName)
+    fun getModelFileInfo(context: Context, model: AIModel): ModelFileInfo = getModelFileInfo(context, model as AIModelConfig)
+
+    fun getModelFileInfo(context: Context, model: AIModelConfig): ModelFileInfo {
+        val modelFile = if (model is DynamicAIModel) {
+            File(model.absoluteFilePath).takeIf { it.exists() }
+        } else {
+            findModelFile(context, model.fileName)
+        }
         return if (modelFile != null && modelFile.exists()) {
             ModelFileInfo(
                 fileName = model.fileName,
@@ -989,7 +1031,7 @@ object ModelDetector {
     /**
      * Validate a specific model's setup and return detailed diagnostic information
      */
-    fun validateModelSetup(context: Context, model: AIModel): Map<String, Any> {
+    fun validateModelSetup(context: Context, model: AIModelConfig): Map<String, Any> {
         val result = mutableMapOf<String, Any>()
         
         Timber.d("🔍 Validating model setup for ${model.modelName}...")
@@ -1094,7 +1136,7 @@ object ModelDetector {
             diagnostics["referenceDirectories"] = dirInfo
             
             // Model availability
-            val allModels = AIModel.getAllModels()
+            val allModels = AIModelRegistry.getAllModels(context)
             val modelInfo = allModels.map { model ->
                 val validation = validateModelSetup(context, model)
                 mapOf(
@@ -1158,7 +1200,7 @@ object ModelDetector {
         }
         
         Timber.d("Model availability:")
-        for (model in AIModel.getAllModels()) {
+        for (model in AIModelRegistry.getAllModels(context)) {
             val modelFile = getModelFile(context, model)
             val refFileName = "${model.fileName}.ref"
             val status = if (modelFile != null) {
@@ -1171,7 +1213,7 @@ object ModelDetector {
             Timber.d("   $status ${model.modelName}$failedStatus")
         }
         val totalAvailable = getAvailableModels(context).size
-        val totalModels = AIModel.getAllModels().size
+        val totalModels = AIModelRegistry.getAllModels(context).size
         Timber.d("📈 Summary: $totalAvailable/$totalModels models available")
     }
     
@@ -1229,7 +1271,7 @@ object ModelDetector {
         
         // Model file analysis
         diagnostics.appendLine("\n🤖 Model File Analysis:")
-        for (model in AIModel.getAllModels()) {
+        for (model in AIModelRegistry.getAllModels(context)) {
             diagnostics.appendLine("   ${model.modelName}:")
             val modelFile = getModelFile(context, model)
             if (modelFile != null) {
@@ -1253,8 +1295,8 @@ object ModelDetector {
         // Summary and recommendations
         diagnostics.appendLine("\n💡 Recommendations:")
         val availableModels = getAvailableModels(context).size
-        val totalModels = AIModel.getAllModels().size
-        
+        val totalModels = AIModelRegistry.getAllModels(context).size
+
         if (availableModels == 0) {
             diagnostics.appendLine("   1. No models available - download models to Downloads folder")
             diagnostics.appendLine("   2. Grant storage permissions in Android Settings")

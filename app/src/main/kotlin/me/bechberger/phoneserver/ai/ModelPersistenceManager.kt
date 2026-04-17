@@ -216,7 +216,9 @@ class ModelPersistenceManager private constructor(private val context: Context) 
     /**
      * Record that a model has been loaded into memory
      */
-    fun recordModelLoaded(model: AIModel) {
+    fun recordModelLoaded(model: AIModel) = recordModelLoaded(model as AIModelConfig)
+
+    fun recordModelLoaded(model: AIModelConfig) {
         val existing = persistedModels[model.modelName]
         if (existing != null) {
             val updated = existing.copy(
@@ -226,18 +228,17 @@ class ModelPersistenceManager private constructor(private val context: Context) 
             )
             persistedModels[model.modelName] = updated
             savePersistedModels()
-            
-            // Record as last loaded model
             prefs.edit().putString(KEY_LAST_LOADED_MODEL, model.modelName).apply()
-            
             Timber.i("Recorded model loaded: ${model.modelName}")
         }
     }
-    
+
     /**
      * Record that a model has been unloaded from memory
      */
-    fun recordModelUnloaded(model: AIModel) {
+    fun recordModelUnloaded(model: AIModel) = recordModelUnloaded(model as AIModelConfig)
+
+    fun recordModelUnloaded(model: AIModelConfig) {
         val existing = persistedModels[model.modelName]
         if (existing != null) {
             val updated = existing.copy(
@@ -246,7 +247,6 @@ class ModelPersistenceManager private constructor(private val context: Context) 
             )
             persistedModels[model.modelName] = updated
             savePersistedModels()
-            
             Timber.i("Recorded model unloaded: ${model.modelName}")
         }
     }

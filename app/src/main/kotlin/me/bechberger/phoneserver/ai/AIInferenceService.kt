@@ -29,7 +29,7 @@ import kotlin.math.max
  */
 class AIInferenceService private constructor(
     private val context: Context,
-    private val model: AIModel
+    private val model: AIModelConfig
 ) {
     
     // MediaPipe components
@@ -51,7 +51,7 @@ class AIInferenceService private constructor(
         /**
          * Create an AI inference service for the specified model
          */
-        suspend fun create(context: Context, model: AIModel): AIInferenceService {
+        suspend fun create(context: Context, model: AIModelConfig): AIInferenceService {
             return withContext(Dispatchers.IO) {
                 val service = AIInferenceService(context, model)
                 
@@ -245,7 +245,7 @@ class AIInferenceService private constructor(
                 
                 AITextResponse(
                     response = response,
-                    model = model.name,
+                    model = model.id,
                     thinking = if (model.thinking) extractThinking(response) else null,
                     license = model.licenseStatement,
                     metadata = AIResponseMetadata(
@@ -375,7 +375,7 @@ class AIInferenceService private constructor(
                 
                 AITextResponse(
                     response = response,
-                    model = model.name,
+                    model = model.id,
                     thinking = if (model.thinking) extractThinking(response) else null,
                     license = model.licenseStatement,
                     metadata = AIResponseMetadata(

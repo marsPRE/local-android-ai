@@ -53,13 +53,26 @@
         android:padding="16dp">
 
         <Button
+            android:id="@+id/buttonScanGallery"
+            android:layout_width="0dp"
+            android:layout_height="48dp"
+            android:layout_weight="1"
+            android:layout_marginEnd="4dp"
+            android:text="Scan Folder"
+            android:textSize="12sp"
+            android:textAllCaps="false"
+            android:backgroundTint="#FF9500"
+            android:textColor="@android:color/white" />
+
+        <Button
             android:id="@+id/buttonRefresh"
             android:layout_width="0dp"
             android:layout_height="48dp"
             android:layout_weight="1"
-            android:layout_marginEnd="8dp"
+            android:layout_marginStart="4dp"
+            android:layout_marginEnd="4dp"
             android:text="Refresh"
-            android:textSize="14sp"
+            android:textSize="12sp"
             android:textAllCaps="false"
             android:backgroundTint="#007AFF"
             android:textColor="@android:color/white" />
@@ -69,9 +82,9 @@
             android:layout_width="0dp"
             android:layout_height="48dp"
             android:layout_weight="1"
-            android:layout_marginStart="8dp"
+            android:layout_marginStart="4dp"
             android:text="Done"
-            android:textSize="14sp"
+            android:textSize="12sp"
             android:textAllCaps="false"
             android:backgroundTint="#34C759"
             android:textColor="@android:color/white" />

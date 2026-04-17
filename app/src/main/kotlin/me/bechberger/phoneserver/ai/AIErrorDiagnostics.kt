@@ -74,7 +74,10 @@ object AIErrorDiagnostics {
     /**
      * Run full diagnostics on model loading failure
      */
-    fun diagnoseModelLoadingFailure(context: Context, model: AIModel): DiagnosticsReport {
+    fun diagnoseModelLoadingFailure(context: Context, model: AIModel): DiagnosticsReport =
+        diagnoseModelLoadingFailure(context, model as AIModelConfig)
+
+    fun diagnoseModelLoadingFailure(context: Context, model: AIModelConfig): DiagnosticsReport {
         Timber.i("=== Starting AI Error Diagnostics for ${model.modelName} ===")
         
         val modelInfo = diagnoseModel(context, model)
@@ -103,20 +106,18 @@ object AIErrorDiagnostics {
     /**
      * Diagnose model file
      */
-    private fun diagnoseModel(context: Context, model: AIModel): ModelDiagnostics {
+    private fun diagnoseModel(context: Context, model: AIModelConfig): ModelDiagnostics {
         val modelFile = ModelDetector.getModelFile(context, model)
         val fileExists = modelFile?.exists() ?: false
         val fileSize = modelFile?.length() ?: 0
-        
-        // Check if file is corrupted (can we read the header?)
+
         var isCorrupted = false
         if (fileExists && model.modelFormat == ModelFormat.LITERT_LM) {
             isCorrupted = !verifyLiteRTLMFile(modelFile!!)
         }
-        
-        // Expected size from URL or known values
+
         val expectedSize = when (model) {
-            AIModel.GEMMA_4_E4B_IT -> 3_650_000_000L // ~3.65 GB
+            AIModel.GEMMA_4_E4B_IT -> 3_650_000_000L
             else -> null
         }
         
@@ -197,7 +198,7 @@ object AIErrorDiagnostics {
     /**
      * Get storage information
      */
-    private fun getStorageInfo(context: Context, model: AIModel): StorageDiagnostics {
+    private fun getStorageInfo(context: Context, model: AIModelConfig): StorageDiagnostics {
         val dataDir = context.filesDir
         val stat = StatFs(dataDir.path)
         

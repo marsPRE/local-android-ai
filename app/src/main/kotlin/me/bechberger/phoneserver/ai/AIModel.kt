@@ -16,22 +16,24 @@ enum class ModelFormat {
  * Supports both MediaPipe and LiteRT-LM backends.
  */
 enum class AIModel(
-    val modelName: String,
-    val fileName: String, // Just the filename (without path)
+    override val modelName: String,
+    override val fileName: String, // Just the filename (without path)
     val url: String,
-    val licenseUrl: String,
-    val preferredBackend: Any?, // MediaPipeBackend or LiteRTBackend
-    val thinking: Boolean,
-    val temperature: Float,
-    val topK: Int,
-    val topP: Float,
-    val supportsVision: Boolean,
-    val maxTokens: Int,
-    val description: String,
-    val needsAuth: Boolean = false,
-    val licenseStatement: String? = null,
-    val modelFormat: ModelFormat = ModelFormat.MEDIAPIPE
-) {
+    override val licenseUrl: String,
+    override val preferredBackend: Any?, // MediaPipeBackend or LiteRTBackend
+    override val thinking: Boolean,
+    override val temperature: Float,
+    override val topK: Int,
+    override val topP: Float,
+    override val supportsVision: Boolean,
+    override val maxTokens: Int,
+    override val description: String,
+    override val needsAuth: Boolean = false,
+    override val licenseStatement: String? = null,
+    override val modelFormat: ModelFormat = ModelFormat.MEDIAPIPE
+) : AIModelConfig {
+
+    override val id: String get() = name
     GEMMA_3_1B_IT(
         modelName = "Gemma 3n E2B IT",
         fileName = "gemma-3n-E2B-it-int4.task",

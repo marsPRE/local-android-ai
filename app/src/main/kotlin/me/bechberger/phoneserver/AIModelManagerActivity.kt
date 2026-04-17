@@ -18,9 +18,13 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import me.bechberger.phoneserver.adapter.AIModelAdapter
 import me.bechberger.phoneserver.ai.AIModel
+import me.bechberger.phoneserver.ai.AIModelConfig
+import me.bechberger.phoneserver.ai.AIModelRegistry
 import me.bechberger.phoneserver.ai.AIService
+import me.bechberger.phoneserver.ai.DynamicAIModel
 import me.bechberger.phoneserver.ai.ModelDetector
 import me.bechberger.phoneserver.testing.ApiTester
+import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -46,9 +50,10 @@ class AIModelManagerActivity : AppCompatActivity() {
     private lateinit var adapter: AIModelAdapter
     private lateinit var buttonRefresh: Button
     private lateinit var buttonClose: Button
+    private lateinit var buttonScanGallery: Button
     private lateinit var aiService: AIService
     
-    private var currentModelForFileLoad: AIModel? = null
+    private var currentModelForFileLoad: AIModelConfig? = null
 
     private val filePickerLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -58,6 +63,20 @@ class AIModelManagerActivity : AppCompatActivity() {
                 currentModelForFileLoad?.let { model ->
                     loadModelFromUri(uri, model)
                 }
+            }
+        }
+    }
+
+    private val galleryFolderPickerLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            result.data?.data?.let { treeUri ->
+                contentResolver.takePersistableUriPermission(
+                    treeUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+                scanGalleryFolder(treeUri)
             }
         }
     }
@@ -81,14 +100,12 @@ class AIModelManagerActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_ai_model_manager)
 
-        // Initialize AI service
         aiService = AIService(this)
+        AIModelRegistry.init(this)
 
         initViews()
         setupRecyclerView()
         setupButtons()
-        
-        // Load model status
         refreshModels()
     }
 
@@ -96,22 +113,17 @@ class AIModelManagerActivity : AppCompatActivity() {
         recyclerView = findViewById(R.id.recyclerViewModels)
         buttonRefresh = findViewById(R.id.buttonRefresh)
         buttonClose = findViewById(R.id.buttonClose)
+        buttonScanGallery = findViewById(R.id.buttonScanGallery)
     }
 
     private fun setupRecyclerView() {
         adapter = AIModelAdapter(
             context = this,
-            models = AIModel.getAllModels(),
+            models = AIModelRegistry.getAllModels(this),
             aiService = aiService,
-            onLoadFileRequested = { model ->
-                showFilePicker(model)
-            },
-            onTestRequested = { model ->
-                testModel(model)
-            },
-            onRefreshRequested = {
-                refreshModels()
-            }
+            onLoadFileRequested = { model -> showFilePicker(model) },
+            onTestRequested = { model -> testModel(model) },
+            onRefreshRequested = { refreshModels() }
         )
         
         recyclerView.layoutManager = LinearLayoutManager(this)
@@ -119,22 +131,112 @@ class AIModelManagerActivity : AppCompatActivity() {
     }
 
     private fun setupButtons() {
-        buttonRefresh.setOnClickListener {
+        buttonRefresh.setOnClickListener { refreshModels() }
+        buttonClose.setOnClickListener { finish() }
+        buttonScanGallery.setOnClickListener { openGalleryFolderPicker() }
+    }
+
+    private fun openGalleryFolderPicker() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        }
+        try {
+            galleryFolderPickerLauncher.launch(intent)
+        } catch (e: Exception) {
+            Toast.makeText(this, "Failed to open folder picker", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun scanGalleryFolder(treeUri: android.net.Uri) {
+        Toast.makeText(this, "Scanning folder for models...", Toast.LENGTH_SHORT).show()
+        CoroutineScope(Dispatchers.IO).launch {
+            val found = mutableListOf<Pair<DocumentFile, String>>() // file, displayPath
+            try {
+                val dir = DocumentFile.fromTreeUri(this@AIModelManagerActivity, treeUri)
+                dir?.listFiles()?.forEach { file ->
+                    val name = file.name ?: return@forEach
+                    if ((name.endsWith(".litertlm") || name.endsWith(".task")) && file.isFile) {
+                        found.add(file to name)
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(this@AIModelManagerActivity, "Error scanning folder: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+                return@launch
+            }
+
+            withContext(Dispatchers.Main) {
+                if (found.isEmpty()) {
+                    Toast.makeText(this@AIModelManagerActivity, "No .litertlm or .task files found in this folder", Toast.LENGTH_LONG).show()
+                    return@withContext
+                }
+                showFoundModelsDialog(found)
+            }
+        }
+    }
+
+    private fun showFoundModelsDialog(found: List<Pair<DocumentFile, String>>) {
+        val names = found.map { it.second }.toTypedArray()
+        val checked = BooleanArray(found.size) { true }
+
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Found ${found.size} model file(s)")
+            .setMultiChoiceItems(names, checked) { _, which, isChecked ->
+                checked[which] = isChecked
+            }
+            .setPositiveButton("Import selected") { _, _ ->
+                val selected = found.filterIndexed { i, _ -> checked[i] }
+                importGalleryModels(selected)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun importGalleryModels(files: List<Pair<DocumentFile, String>>) {
+        CoroutineScope(Dispatchers.Main).launch {
+            var imported = 0
+            for ((docFile, fileName) in files) {
+                Toast.makeText(this@AIModelManagerActivity, "Importing $fileName...", Toast.LENGTH_SHORT).show()
+                val success = withContext(Dispatchers.IO) {
+                    copyGalleryModelFile(docFile, fileName)
+                }
+                if (success != null) {
+                    val dynModel = DynamicAIModel.fromFile(success)
+                    AIModelRegistry.addDynamicModel(this@AIModelManagerActivity, dynModel)
+                    imported++
+                }
+            }
+            Toast.makeText(this@AIModelManagerActivity, "Imported $imported/${files.size} models", Toast.LENGTH_LONG).show()
             refreshModels()
         }
+    }
 
-        buttonClose.setOnClickListener {
-            finish()
+    private fun copyGalleryModelFile(docFile: DocumentFile, fileName: String): String? {
+        return try {
+            val modelsDir = getExternalFilesDir(null)?.let { File(it, "imported_models") }
+                ?: File(filesDir, "imported_models")
+            if (!modelsDir.exists()) modelsDir.mkdirs()
+            val targetFile = File(modelsDir, fileName)
+            val inputStream = contentResolver.openInputStream(docFile.uri) ?: return null
+            inputStream.use { input ->
+                java.io.FileOutputStream(targetFile).use { output ->
+                    input.copyTo(output)
+                }
+            }
+            if (targetFile.exists() && targetFile.length() > 0) targetFile.absolutePath else null
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to copy gallery model: $fileName")
+            null
         }
     }
 
     private fun refreshModels() {
-        adapter.refreshModelInfo()
-        adapter.notifyDataSetChanged()
+        adapter.updateModels(AIModelRegistry.getAllModels(this))
         ModelDetector.logModelStatus(this)
     }
 
-    private fun showFilePicker(model: AIModel) {
+    private fun showFilePicker(model: AIModelConfig) {
         currentModelForFileLoad = model
         
         // Check permissions first
@@ -192,7 +294,7 @@ class AIModelManagerActivity : AppCompatActivity() {
         permissionLauncher.launch(permissions)
     }
 
-    private fun loadModelFromUri(uri: Uri, model: AIModel) {
+    private fun loadModelFromUri(uri: Uri, model: AIModelConfig) {
         // Set processing state
         // Mark model as processing in UI
         // adapter.setModelProcessing(model, true)
@@ -233,7 +335,7 @@ class AIModelManagerActivity : AppCompatActivity() {
         }
     }
 
-    private suspend fun copyModelFromUri(uri: Uri, model: AIModel): Boolean {
+    private suspend fun copyModelFromUri(uri: Uri, model: AIModelConfig): Boolean {
         return try {
             Timber.d("🔄 Starting model import for ${model.modelName}")
             Timber.d("   Source URI: $uri")
@@ -353,7 +455,7 @@ class AIModelManagerActivity : AppCompatActivity() {
     /**
      * Test a model to see if it can be loaded and used
      */
-    private fun testModel(model: AIModel) {
+    private fun testModel(model: AIModelConfig) {
         lifecycleScope.launch {
             try {
                 Toast.makeText(this@AIModelManagerActivity, "Testing ${model.modelName}...", Toast.LENGTH_SHORT).show()
@@ -374,7 +476,7 @@ class AIModelManagerActivity : AppCompatActivity() {
     /**
      * Show a modern dialog for testing AI models with custom prompts and markdown formatting
      */
-    private suspend fun showStreamingTestDialog(model: AIModel, aiService: AIService) {
+    private suspend fun showStreamingTestDialog(model: AIModelConfig, aiService: AIService) {
         withContext(Dispatchers.Main) {
             val dialogBuilder = android.app.AlertDialog.Builder(this@AIModelManagerActivity)
             
