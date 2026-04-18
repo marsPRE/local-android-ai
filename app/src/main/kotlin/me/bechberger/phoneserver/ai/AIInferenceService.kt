@@ -131,6 +131,16 @@ class AIInferenceService private constructor(
         val modelFile = ModelDetector.getModelFile(context, model)
             ?: throw ModelNotDownloadedException("Model file not found for ${model.modelName}")
 
+        // Validate file header before passing to LiteRT — a ZIP/APK header causes SIGABRT (uncatchable)
+        val header = ByteArray(4)
+        modelFile.inputStream().use { it.read(header) }
+        if (header[0] == 0x50.toByte() && header[1] == 0x4B.toByte()) {
+            throw AIServiceException(
+                "Model file '${modelFile.name}' is a ZIP archive, not a LiteRT model. " +
+                "On HuggingFace, download the .litertlm file directly, not the repository ZIP."
+            )
+        }
+
         val modelPath = modelFile.absolutePath
 
         Timber.d("Loading LiteRT-LM model: ${model.modelName}")
