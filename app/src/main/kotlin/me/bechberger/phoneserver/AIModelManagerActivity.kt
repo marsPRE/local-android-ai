@@ -267,13 +267,9 @@ class AIModelManagerActivity : AppCompatActivity() {
     }
 
     private fun refreshModels() {
-        val ready = AIModelRegistry.getReadyModels(this)
-        val downloadable = AIModelRegistry.getDownloadableModels(this)
-        val edgeGallery = AIModelRegistry.getEdgeGalleryOnlyModels(this)
-        val unknown = AIModelRegistry.getDynamicModels(this).filter { dm ->
-            CatalogLoader.findVariantForFile(this, dm.fileName) == null
-        }
-        adapter.updateWithSections(ready, downloadable, edgeGallery, unknown)
+        val models = AIModelRegistry.getDynamicModels(this)
+            .filter { java.io.File(it.absoluteFilePath).exists() }
+        adapter.updateModels(models)
         ModelDetector.logModelStatus(this)
     }
 
