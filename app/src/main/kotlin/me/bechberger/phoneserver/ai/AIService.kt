@@ -269,6 +269,8 @@ class AIService(private val context: Context) {
                             val finalPrompt = if (hasImageInput) {
                                 val processedInput = processImageInput(request)
                                 processedInput.prompt
+                            } else if (request.rawPrompt) {
+                                request.text
                             } else {
                                 applyPromptTemplate(model, request.text)
                             }

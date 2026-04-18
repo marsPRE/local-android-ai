@@ -1709,6 +1709,100 @@ class WebServer(private val context: Context) {
                 }
             }
 
+            // ── OpenAI-compatible API (/v1) ───────────────────────────────────
+            route("/v1") {
+
+                /** GET /v1/models — list available models in OpenAI format */
+                get("/models") {
+                    val models = AIModelRegistry.getDynamicModels(this@WebServer.context)
+                        .filter { java.io.File(it.absoluteFilePath).exists() }
+                    call.respond(mapOf(
+                        "object" to "list",
+                        "data" to models.map { m ->
+                            mapOf(
+                                "id" to m.id,
+                                "object" to "model",
+                                "created" to (System.currentTimeMillis() / 1000L),
+                                "owned_by" to "local",
+                                "name" to m.modelName
+                            )
+                        }
+                    ))
+                }
+
+                /** POST /v1/chat/completions — OpenAI-compatible chat endpoint */
+                post("/chat/completions") {
+                    val startTime = System.currentTimeMillis()
+                    val bodyText = call.receiveText()
+                    val gson = com.google.gson.Gson()
+                    val json = try {
+                        gson.fromJson(bodyText, com.google.gson.JsonObject::class.java)
+                    } catch (e: Exception) {
+                        call.respond(HttpStatusCode.BadRequest, mapOf("error" to "Invalid JSON"))
+                        return@post
+                    }
+
+                    val modelId = json.get("model")?.asString ?: ""
+                    val messagesArr = json.getAsJsonArray("messages")
+                    val maxTokens = json.get("max_tokens")?.asInt
+                    val temperature = json.get("temperature")?.asFloat
+
+                    if (messagesArr == null || messagesArr.size() == 0) {
+                        call.respond(HttpStatusCode.BadRequest, mapOf("error" to "messages array required"))
+                        return@post
+                    }
+
+                    // Resolve model from registry
+                    val model = AIModelRegistry.fromString(modelId, this@WebServer.context)
+                    if (model == null) {
+                        call.respond(HttpStatusCode.NotFound, mapOf(
+                            "error" to mapOf("message" to "Model '$modelId' not found", "type" to "invalid_request_error")
+                        ))
+                        return@post
+                    }
+
+                    // Build multi-turn prompt using model-specific chat template
+                    val prompt = buildOpenAiPrompt(model.modelName, messagesArr)
+
+                    val request = me.bechberger.phoneserver.ai.AITextRequest(
+                        text = prompt,
+                        model = modelId,
+                        temperature = temperature,
+                        maxTokens = maxTokens,
+                        rawPrompt = true
+                    )
+
+                    try {
+                        val aiResponse = aiService.handleTextRequest(request)
+                        val created = System.currentTimeMillis() / 1000L
+                        call.respond(mapOf(
+                            "id" to "chatcmpl-${System.currentTimeMillis()}",
+                            "object" to "chat.completion",
+                            "created" to created,
+                            "model" to modelId,
+                            "choices" to listOf(mapOf(
+                                "index" to 0,
+                                "message" to mapOf(
+                                    "role" to "assistant",
+                                    "content" to aiResponse.response
+                                ),
+                                "finish_reason" to "stop"
+                            )),
+                            "usage" to mapOf(
+                                "prompt_tokens" to 0,
+                                "completion_tokens" to aiResponse.metadata.tokenCount,
+                                "total_tokens" to aiResponse.metadata.tokenCount
+                            )
+                        ))
+                    } catch (e: Exception) {
+                        Timber.e(e, "OpenAI chat completions error")
+                        call.respond(HttpStatusCode.InternalServerError, mapOf(
+                            "error" to mapOf("message" to (e.message ?: "inference failed"), "type" to "server_error")
+                        ))
+                    }
+                }
+            }
+
             get("/") {
                 call.respond(mapOf(
                     "server" to "AI Phone Server",
@@ -1728,6 +1822,77 @@ class WebServer(private val context: Context) {
         }
     }
     
+    /**
+     * Build a model-specific prompt from OpenAI-style messages array.
+     * Supports multi-turn conversations with system/user/assistant roles.
+     */
+    private fun buildOpenAiPrompt(
+        modelName: String,
+        messages: com.google.gson.JsonArray
+    ): String {
+        data class Msg(val role: String, val content: String)
+        val msgs = messages.map { el ->
+            val o = el.asJsonObject
+            Msg(o.get("role")?.asString ?: "user", o.get("content")?.asString ?: "")
+        }
+
+        val isGemma = modelName.contains("Gemma", ignoreCase = true)
+        val isLlama = modelName.contains("Llama", ignoreCase = true)
+        val isTinyLlama = modelName.contains("TinyLlama", ignoreCase = true)
+        val isDeepSeek = modelName.contains("DeepSeek", ignoreCase = true)
+
+        return buildString {
+            when {
+                isGemma -> {
+                    msgs.forEach { msg ->
+                        when (msg.role) {
+                            "system" -> append("<start_of_turn>user\n${msg.content}<end_of_turn>\n")
+                            "user" -> append("<start_of_turn>user\n${msg.content}<end_of_turn>\n")
+                            "assistant" -> append("<start_of_turn>model\n${msg.content}<end_of_turn>\n")
+                        }
+                    }
+                    append("<start_of_turn>model\n")
+                }
+                isTinyLlama -> {
+                    val system = msgs.firstOrNull { it.role == "system" }?.content ?: ""
+                    append("<|system|>\n$system</s>\n")
+                    msgs.filter { it.role != "system" }.forEach { msg ->
+                        when (msg.role) {
+                            "user" -> append("<|user|>\n${msg.content}</s>\n")
+                            "assistant" -> append("<|assistant|>\n${msg.content}</s>\n")
+                        }
+                    }
+                    append("<|assistant|>\n")
+                }
+                isLlama -> {
+                    val system = msgs.firstOrNull { it.role == "system" }?.content
+                    if (system != null) append("<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n$system<|eot_id|>")
+                    else append("<|begin_of_text|>")
+                    msgs.filter { it.role != "system" }.forEach { msg ->
+                        when (msg.role) {
+                            "user" -> append("<|start_header_id|>user<|end_header_id|>\n\n${msg.content}<|eot_id|>")
+                            "assistant" -> append("<|start_header_id|>assistant<|end_header_id|>\n\n${msg.content}<|eot_id|>")
+                        }
+                    }
+                    append("<|start_header_id|>assistant<|end_header_id|>\n\n")
+                }
+                isDeepSeek -> {
+                    msgs.forEach { msg ->
+                        when (msg.role) {
+                            "system", "user" -> append("<|User|>${msg.content}")
+                            "assistant" -> append("<|Assistant|>${msg.content}")
+                        }
+                    }
+                    append("<|Assistant|>")
+                }
+                else -> {
+                    // Fallback: just use last user message
+                    append(msgs.lastOrNull { it.role == "user" }?.content ?: "")
+                }
+            }
+        }
+    }
+
     /**
      * Scale image for output based on ImageScaling settings
      * @param bitmap Original bitmap

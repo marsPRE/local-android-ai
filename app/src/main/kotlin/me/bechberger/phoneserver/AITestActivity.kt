@@ -9,6 +9,7 @@ import android.graphics.Matrix
 import android.util.Base64
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
+import me.bechberger.phoneserver.ai.AIModelRegistry
 import me.bechberger.phoneserver.ai.ModelDetector
 import me.bechberger.phoneserver.logging.RequestLogger
 import me.bechberger.phoneserver.testing.ApiTester
@@ -91,7 +92,8 @@ class AITestActivity : AppCompatActivity() {
     private fun setupModelSelection() {
         lifecycleScope.launch {
             val models = withContext(Dispatchers.IO) {
-                ModelDetector.getAvailableModels(this@AITestActivity)
+                AIModelRegistry.getDynamicModels(this@AITestActivity)
+                    .filter { java.io.File(it.absoluteFilePath).exists() }
             }
 
             availableModels = models

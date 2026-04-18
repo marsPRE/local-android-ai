@@ -1153,7 +1153,8 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             try {
                 val availableModels = withContext(Dispatchers.IO) {
-                    me.bechberger.phoneserver.ai.ModelDetector.getAvailableModels(this@MainActivity)
+                    me.bechberger.phoneserver.ai.AIModelRegistry.getDynamicModels(this@MainActivity)
+                        .filter { java.io.File(it.absoluteFilePath).exists() }
                 }
                 
                 runOnUiThread {

@@ -10,10 +10,11 @@ data class AITextRequest(
     val topK: Int? = null,
     val topP: Float? = null,
     val maxTokens: Int? = null,
-    val image: String? = null,  // Base64 encoded image
-    val captureConfig: CaptureConfig? = null,  // Camera capture configuration
-    val returnImage: Boolean = false,  // Whether to return captured/processed image in response
-    val imageScaling: ImageScaling = ImageScaling.MEDIUM  // Image scaling for returned image
+    val image: String? = null,
+    val captureConfig: CaptureConfig? = null,
+    val returnImage: Boolean = false,
+    val imageScaling: ImageScaling = ImageScaling.MEDIUM,
+    val rawPrompt: Boolean = false  // Skip chat template (prompt already formatted)
 )
 
 /**
