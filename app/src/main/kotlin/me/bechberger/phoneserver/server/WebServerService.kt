@@ -79,12 +79,13 @@ class WebServerService : Service() {
         serviceScope.launch {
             try {
                 if (webServer == null || !isRunning) {
-                    Timber.i("Starting/restarting web server on port 8005")
-                    webServer?.stop() // Clean stop if exists
+                    val port = me.bechberger.phoneserver.manager.ServerSettings.getPort(this@WebServerService)
+                    Timber.i("Starting/restarting web server on port $port")
+                    webServer?.stop()
                     webServer = WebServer(this@WebServerService)
-                    webServer?.start(8005)
+                    webServer?.start(port)
                     setRunning(true)
-                    Timber.i("Web server started successfully on port 8005 in background service")
+                    Timber.i("Web server started successfully on port $port in background service")
                 } else {
                     Timber.d("Web server already running, maintaining service")
                     setRunning(true)
@@ -92,10 +93,8 @@ class WebServerService : Service() {
             } catch (e: Exception) {
                 Timber.e(e, "Failed to start web server in background service - will retry")
                 setRunning(false)
-
-                // Schedule a retry after a short delay
                 serviceScope.launch {
-                    delay(5000) // Wait 5 seconds
+                    delay(5000)
                     if (!isRunning) {
                         Timber.i("Retrying server start after failure")
                         ensureServerRunning()
@@ -126,7 +125,7 @@ class WebServerService : Service() {
 
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Local AI Phone Server")
-            .setContentText("Server running persistently on port 8005 - Always available")
+            .setContentText("Server running on port ${me.bechberger.phoneserver.manager.ServerSettings.getPort(this)} - Always available")
             .setSmallIcon(R.drawable.ic_notification)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)

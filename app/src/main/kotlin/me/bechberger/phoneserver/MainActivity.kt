@@ -747,15 +747,47 @@ class MainActivity : AppCompatActivity() {
         runOnUiThread {
             val statusText = findViewById<TextView>(R.id.textStatus)
             val actionButton = findViewById<Button>(R.id.buttonStartServer)
-            
+            val port = me.bechberger.phoneserver.manager.ServerSettings.getPort(this)
+
             if (isServerRunning) {
-                statusText.text = "AI Phone Server is running"
-                actionButton.text = "Stop Server :8005"
+                statusText.text = "AI Phone Server is running on port $port (tap to change)"
+                actionButton.text = "Stop Server :$port"
             } else {
-                statusText.text = "AI Phone Server is stopped"
-                actionButton.text = "Start Server :8005"
+                statusText.text = "AI Phone Server is stopped (port $port — tap to change)"
+                actionButton.text = "Start Server :$port"
             }
+
+            statusText.setOnClickListener { showPortChangeDialog() }
         }
+    }
+
+    private fun showPortChangeDialog() {
+        val port = me.bechberger.phoneserver.manager.ServerSettings.getPort(this)
+        val input = android.widget.EditText(this).apply {
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            setText(port.toString())
+            selectAll()
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Change Server Port")
+            .setMessage("Enter port number (1024–65535).\nRestart the server to apply.")
+            .setView(input)
+            .setPositiveButton("Save") { _, _ ->
+                val newPort = input.text.toString().toIntOrNull()
+                if (newPort == null || newPort < 1024 || newPort > 65535) {
+                    Toast.makeText(this, "Invalid port — must be 1024–65535", Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+                if (!me.bechberger.phoneserver.manager.ServerSettings.isPortAvailable(newPort)) {
+                    Toast.makeText(this, "Port $newPort is already in use by another app", Toast.LENGTH_LONG).show()
+                    return@setPositiveButton
+                }
+                me.bechberger.phoneserver.manager.ServerSettings.setPort(this, newPort)
+                Toast.makeText(this, "Port set to $newPort — restart the server to apply", Toast.LENGTH_LONG).show()
+                updateUI()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun setupApiTesting() {
