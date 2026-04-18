@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.provider.Settings
 import android.widget.Button
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -20,6 +21,7 @@ import me.bechberger.phoneserver.adapter.AIModelAdapter
 import me.bechberger.phoneserver.ai.AIModel
 import me.bechberger.phoneserver.ai.AIModelConfig
 import me.bechberger.phoneserver.ai.AIModelRegistry
+import me.bechberger.phoneserver.ai.CatalogLoader
 import me.bechberger.phoneserver.ai.AIService
 import me.bechberger.phoneserver.ai.DynamicAIModel
 import me.bechberger.phoneserver.ai.ModelDetector
@@ -67,17 +69,14 @@ class AIModelManagerActivity : AppCompatActivity() {
         }
     }
 
-    private val galleryFolderPickerLauncher = registerForActivityResult(
+    private val manageStorageResultLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            result.data?.data?.let { treeUri ->
-                contentResolver.takePersistableUriPermission(
-                    treeUri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION
-                )
-                scanGalleryFolder(treeUri)
-            }
+    ) {
+        // User returned from Settings — check if permission was granted now
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && Environment.isExternalStorageManager()) {
+            scanEdgeGalleryModels()
+        } else {
+            Toast.makeText(this, "Permission not granted — can't scan Edge Gallery folder", Toast.LENGTH_LONG).show()
         }
     }
     
@@ -137,72 +136,99 @@ class AIModelManagerActivity : AppCompatActivity() {
     }
 
     private fun openGalleryFolderPicker() {
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (!Environment.isExternalStorageManager()) {
+                android.app.AlertDialog.Builder(this)
+                    .setTitle("Permission required")
+                    .setMessage("To scan Edge Gallery models, this app needs 'All files access'. You'll be taken to Settings — enable it for this app, then come back.")
+                    .setPositiveButton("Open Settings") { _, _ ->
+                        val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                            Uri.parse("package:$packageName"))
+                        manageStorageResultLauncher.launch(intent)
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+                return
+            }
         }
-        try {
-            galleryFolderPickerLauncher.launch(intent)
-        } catch (e: Exception) {
-            Toast.makeText(this, "Failed to open folder picker", Toast.LENGTH_SHORT).show()
-        }
+        scanEdgeGalleryModels()
     }
 
-    private fun scanGalleryFolder(treeUri: android.net.Uri) {
-        Toast.makeText(this, "Scanning folder for models...", Toast.LENGTH_SHORT).show()
+    private fun scanEdgeGalleryModels() {
         CoroutineScope(Dispatchers.IO).launch {
-            val found = mutableListOf<Pair<DocumentFile, String>>() // file, displayPath
-            try {
-                val dir = DocumentFile.fromTreeUri(this@AIModelManagerActivity, treeUri)
-                dir?.listFiles()?.forEach { file ->
-                    val name = file.name ?: return@forEach
-                    if ((name.endsWith(".litertlm") || name.endsWith(".task")) && file.isFile) {
-                        found.add(file to name)
+            val ext = Environment.getExternalStorageDirectory()
+            val searchRoots = listOf(
+                File(ext, "Android/data/com.google.ai.edge.gallery/files"),
+                File(ext, "Android/data/com.google.aiedge.gallery/files"),
+                File(ext, "Download"),
+                File(ext, "Downloads")
+            )
+            val found = mutableListOf<File>()
+            val accessible = mutableListOf<File>()
+            val inaccessible = mutableListOf<File>()
+            for (root in searchRoots) {
+                if (!root.exists()) continue
+                if (!root.canRead()) { inaccessible.add(root); continue }
+                accessible.add(root)
+                root.walkTopDown().maxDepth(5).forEach { file ->
+                    if (file.isFile && (file.name.endsWith(".litertlm") || file.name.endsWith(".task"))) {
+                        found.add(file)
                     }
                 }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(this@AIModelManagerActivity, "Error scanning folder: ${e.message}", Toast.LENGTH_LONG).show()
-                }
-                return@launch
             }
-
             withContext(Dispatchers.Main) {
-                if (found.isEmpty()) {
-                    Toast.makeText(this@AIModelManagerActivity, "No .litertlm or .task files found in this folder", Toast.LENGTH_LONG).show()
-                    return@withContext
+                if (found.isNotEmpty()) {
+                    showFoundFilesDialog(found)
+                } else if (inaccessible.isNotEmpty()) {
+                    showAdbCopyDialog()
+                } else {
+                    Toast.makeText(this@AIModelManagerActivity,
+                        "No model files found. Copy them to Downloads first.", Toast.LENGTH_LONG).show()
+                    showAdbCopyDialog()
                 }
-                showFoundModelsDialog(found)
             }
         }
     }
 
-    private fun showFoundModelsDialog(found: List<Pair<DocumentFile, String>>) {
-        val names = found.map { it.second }.toTypedArray()
-        val checked = BooleanArray(found.size) { true }
-
+    private fun showAdbCopyDialog() {
+        val simpleCmd = "adb pull \"/sdcard/Android/data/com.google.ai.edge.gallery/files\" /sdcard/Download/"
         android.app.AlertDialog.Builder(this)
-            .setTitle("Found ${found.size} model file(s)")
-            .setMultiChoiceItems(names, checked) { _, which, isChecked ->
-                checked[which] = isChecked
-            }
+            .setTitle("Models not directly accessible")
+            .setMessage(
+                "Android 15 blocks direct access to other apps' data folders.\n\n" +
+                "On-device (no PC needed):\n" +
+                "1. Open the Files app (Google)\n" +
+                "2. Navigate to:\n   Android/data/com.google.ai.edge.gallery/files/\n" +
+                "3. Copy the .litertlm files to Downloads\n" +
+                "4. Tap 'Import Models' again\n\n" +
+                "With PC (ADB):\n$simpleCmd"
+            )
+            .setPositiveButton("OK", null)
+            .show()
+    }
+
+    private fun showFoundFilesDialog(files: List<File>) {
+        val names = files.map { it.name }.toTypedArray()
+        val checked = BooleanArray(files.size) { true }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Found ${files.size} model file(s)")
+            .setMultiChoiceItems(names, checked) { _, which, isChecked -> checked[which] = isChecked }
             .setPositiveButton("Import selected") { _, _ ->
-                val selected = found.filterIndexed { i, _ -> checked[i] }
-                importGalleryModels(selected)
+                val selected = files.filterIndexed { i, _ -> checked[i] }
+                importLocalFiles(selected)
             }
             .setNegativeButton("Cancel", null)
             .show()
     }
 
-    private fun importGalleryModels(files: List<Pair<DocumentFile, String>>) {
+    private fun importLocalFiles(files: List<File>) {
         CoroutineScope(Dispatchers.Main).launch {
             var imported = 0
-            for ((docFile, fileName) in files) {
-                Toast.makeText(this@AIModelManagerActivity, "Importing $fileName...", Toast.LENGTH_SHORT).show()
-                val success = withContext(Dispatchers.IO) {
-                    copyGalleryModelFile(docFile, fileName)
-                }
-                if (success != null) {
-                    val dynModel = DynamicAIModel.fromFile(success)
+            for (file in files) {
+                Toast.makeText(this@AIModelManagerActivity, "Importing ${file.name}...", Toast.LENGTH_SHORT).show()
+                val path = withContext(Dispatchers.IO) { copyFileToImportedModels(file) }
+                if (path != null) {
+                    val dynModel = DynamicAIModel.fromFile(path)
                     AIModelRegistry.addDynamicModel(this@AIModelManagerActivity, dynModel)
                     imported++
                 }
@@ -212,27 +238,42 @@ class AIModelManagerActivity : AppCompatActivity() {
         }
     }
 
-    private fun copyGalleryModelFile(docFile: DocumentFile, fileName: String): String? {
+    private fun copyFileToImportedModels(file: File): String? {
         return try {
             val modelsDir = getExternalFilesDir(null)?.let { File(it, "imported_models") }
                 ?: File(filesDir, "imported_models")
             if (!modelsDir.exists()) modelsDir.mkdirs()
-            val targetFile = File(modelsDir, fileName)
-            val inputStream = contentResolver.openInputStream(docFile.uri) ?: return null
-            inputStream.use { input ->
-                java.io.FileOutputStream(targetFile).use { output ->
-                    input.copyTo(output)
-                }
-            }
+            val targetFile = File(modelsDir, file.name)
+            file.copyTo(targetFile, overwrite = true)
             if (targetFile.exists() && targetFile.length() > 0) targetFile.absolutePath else null
         } catch (e: Exception) {
-            Timber.e(e, "Failed to copy gallery model: $fileName")
+            Timber.e(e, "Failed to copy model: ${file.name}")
             null
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        lifecycleScope.launch(Dispatchers.IO) {
+            val count = AIModelRegistry.scanAndAutoImport(this@AIModelManagerActivity)
+            if (count > 0) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(this@AIModelManagerActivity,
+                        "Auto-imported $count new model(s) from Downloads", Toast.LENGTH_SHORT).show()
+                    refreshModels()
+                }
+            }
+        }
+    }
+
     private fun refreshModels() {
-        adapter.updateModels(AIModelRegistry.getAllModels(this))
+        val ready = AIModelRegistry.getReadyModels(this)
+        val downloadable = AIModelRegistry.getDownloadableModels(this)
+        val edgeGallery = AIModelRegistry.getEdgeGalleryOnlyModels(this)
+        val unknown = AIModelRegistry.getDynamicModels(this).filter { dm ->
+            CatalogLoader.findVariantForFile(this, dm.fileName) == null
+        }
+        adapter.updateWithSections(ready, downloadable, edgeGallery, unknown)
         ModelDetector.logModelStatus(this)
     }
 

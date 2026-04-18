@@ -698,16 +698,25 @@ class WebServer(private val context: Context) {
                             return@post
                         }
                         
-                        // Start download process
-                        val downloadResult = aiService.downloadModel(model)
-                        
+                        // Start download process (only for static models with download URLs)
+                        val staticModel = model as? AIModel
+                        if (staticModel == null || staticModel.url.isEmpty()) {
+                            call.respond(HttpStatusCode.BadRequest, me.bechberger.phoneserver.ai.AIErrorResponse(
+                                error = "Not downloadable",
+                                code = "NOT_DOWNLOADABLE",
+                                details = "Dynamic/Gallery models cannot be downloaded via URL"
+                            ))
+                            return@post
+                        }
+                        val downloadResult = aiService.downloadModel(staticModel)
+
                         call.respond(
                             ModelDownloadResponse(
                                 success = downloadResult.success,
                                 message = downloadResult.message,
                                 modelName = model.modelName,
                                 status = if (downloadResult.success) "download_started" else "download_failed",
-                                downloadUrl = if (!downloadResult.success) model.url else null
+                                downloadUrl = if (!downloadResult.success) staticModel.url else null
                             )
                         )
                         
@@ -767,7 +776,7 @@ class WebServer(private val context: Context) {
                             return@get
                         }
                         
-                        val persistenceInfo = aiService.getModelPersistenceInfo(model)
+                        val persistenceInfo = (model as? AIModel)?.let { aiService.getModelPersistenceInfo(it) }
                         if (persistenceInfo == null) {
                             call.respond(
                                 HttpStatusCode.NotFound,
@@ -870,7 +879,7 @@ class WebServer(private val context: Context) {
                             return@delete
                         }
                         
-                        val removed = aiService.removeModel(model)
+                        val removed = (model as? AIModel)?.let { aiService.removeModel(it) } ?: false
                         if (removed) {
                             call.respond(mapOf(
                                 "success" to true,
@@ -993,7 +1002,7 @@ class WebServer(private val context: Context) {
                                 )
                             ),
                             "recommendations" to diagnostics.recommendations,
-                            "quickStatus" to AIErrorDiagnostics.getQuickStatus(this@WebServer.context, model)
+                            "quickStatus" to ((model as? AIModel)?.let { AIErrorDiagnostics.getQuickStatus(this@WebServer.context, it) } ?: "dynamic_model")
                         ))
                     } catch (e: Exception) {
                         Timber.e(e, "Failed to generate AI diagnostics")

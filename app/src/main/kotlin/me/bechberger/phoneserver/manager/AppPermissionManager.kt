@@ -63,17 +63,22 @@ class AppPermissionManager private constructor() {
      * Check if the app has storage permissions for AI model persistence
      */
     fun hasStoragePermissions(context: Context): Boolean {
+        // MANAGE_EXTERNAL_STORAGE (granted via Settings) covers all storage access needs
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R &&
+            android.os.Environment.isExternalStorageManager()) {
+            return true
+        }
+        // Models in getExternalFilesDir() never need runtime permissions — always accessible
+        val appModelsDir = context.getExternalFilesDir("models")
+        if (appModelsDir != null && appModelsDir.exists()) return true
+
         return if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            // Android 13+ needs media permissions for reading downloaded files
             ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_IMAGES) == PermissionChecker.PERMISSION_GRANTED ||
             ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_VIDEO) == PermissionChecker.PERMISSION_GRANTED ||
             ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_AUDIO) == PermissionChecker.PERMISSION_GRANTED
         } else if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-            // Android 10-12 doesn't need external storage permission for app-specific directories
-            // but may need it for accessing Downloads folder
             ContextCompat.checkSelfPermission(context, Manifest.permission.READ_EXTERNAL_STORAGE) == PermissionChecker.PERMISSION_GRANTED
         } else {
-            // Android 9 and below need explicit storage permissions
             ContextCompat.checkSelfPermission(context, Manifest.permission.READ_EXTERNAL_STORAGE) == PermissionChecker.PERMISSION_GRANTED &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) == PermissionChecker.PERMISSION_GRANTED
         }

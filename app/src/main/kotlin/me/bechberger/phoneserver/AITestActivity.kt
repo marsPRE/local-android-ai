@@ -18,7 +18,10 @@ import com.google.gson.GsonBuilder
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import io.noties.markwon.Markwon
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import timber.log.Timber
@@ -39,6 +42,8 @@ class AITestActivity : AppCompatActivity() {
     private val gson = GsonBuilder().setPrettyPrinting().create()
     private lateinit var markwon: Markwon
     private var availableModels: List<me.bechberger.phoneserver.ai.AIModelConfig> = emptyList()
+    // Outlives onStop so long-running inference results are shown when user returns
+    private val inferenceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -63,6 +68,11 @@ class AITestActivity : AppCompatActivity() {
     override fun onSupportNavigateUp(): Boolean {
         onBackPressed()
         return true
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        inferenceScope.cancel()
     }
     
     private fun initializeViews() {
@@ -184,13 +194,14 @@ class AITestActivity : AppCompatActivity() {
             return
         }
 
-        lifecycleScope.launch {
+        inferenceScope.launch {
             val selectedModelName = availableModels[spinnerPos].id
             val imageInputType = getSelectedImageInputType(radioGroup)
             
             // Show loading state
             generateButton.isEnabled = false
             generateButton.text = "⏳ Processing..."
+            window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             layoutResults.visibility = View.VISIBLE
             imageViewCaptured.visibility = View.GONE
             
@@ -238,6 +249,7 @@ class AITestActivity : AppCompatActivity() {
             } finally {
                 generateButton.isEnabled = true
                 generateButton.text = "🚀 Generate"
+                window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             }
         }
     }

@@ -3,6 +3,7 @@ package me.bechberger.phoneserver.ai
 import android.content.Context
 import android.graphics.Bitmap
 import android.os.Environment
+import android.os.PowerManager
 import android.util.Base64
 import me.bechberger.phoneserver.ai.AIErrorDiagnostics
 import me.bechberger.phoneserver.services.CameraService
@@ -60,6 +61,9 @@ class AIService(private val context: Context) {
      */
     suspend fun handleTextRequest(request: AITextRequest): AITextResponse {
         return withContext(Dispatchers.IO) {
+            val wakeLock = (context.getSystemService(Context.POWER_SERVICE) as PowerManager)
+                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "PhoneServer:AIInference")
+            wakeLock.acquire(10 * 60 * 1000L) // 10 min max
             try {
                 // Set processing state
                 isProcessing = true
@@ -266,7 +270,7 @@ class AIService(private val context: Context) {
                                 val processedInput = processImageInput(request)
                                 processedInput.prompt
                             } else {
-                                request.text
+                                applyPromptTemplate(model, request.text)
                             }
                             
                             Timber.d("Starting text-only inference with ${model.modelName}")
@@ -306,9 +310,9 @@ class AIService(private val context: Context) {
                 Timber.e(e, "Unexpected AI text request failure")
                 throw AIServiceException("Unexpected AI service error: ${e.javaClass.simpleName} - ${e.message}")
             } finally {
-                // Clear processing state
                 isProcessing = false
                 processingStartTime = null
+                if (wakeLock.isHeld) wakeLock.release()
             }
         }
     }
@@ -382,7 +386,7 @@ class AIService(private val context: Context) {
                 // Run a simple test inference
                 val testOutput = try {
                     testInferenceService.generateText(
-                        prompt = formatTestPrompt(model, "Say hello in one sentence."),
+                        prompt = applyPromptTemplate(model, "Say hello in one sentence."),
                         temperature = 0.7f,
                         topK = 40,
                         topP = 0.95f
@@ -540,7 +544,7 @@ class AIService(private val context: Context) {
                 // progressCallback contract: partialResult = delta (new tokens only), matching MediaPipe.
                 var accumulatedText = ""
                 val testOutput = try {
-                    val formattedPrompt = formatTestPrompt(model, prompt)
+                    val formattedPrompt = applyPromptTemplate(model, prompt)
                     testInferenceService.generateText(
                         prompt = formattedPrompt,
                         temperature = temperature ?: 0.7f,
@@ -1274,7 +1278,7 @@ class AIService(private val context: Context) {
      * Wraps a plain prompt in the correct chat template for each model family.
      * Instruction-tuned models need these templates — without them they generate garbage.
      */
-    private fun formatTestPrompt(model: AIModelConfig, prompt: String): String = when {
+    private fun applyPromptTemplate(model: AIModelConfig, prompt: String): String = when {
         model.modelName.contains("Gemma", ignoreCase = true) ->
             "<start_of_turn>user\n$prompt<end_of_turn>\n<start_of_turn>model\n"
         model.modelName.contains("Llama", ignoreCase = true) ->

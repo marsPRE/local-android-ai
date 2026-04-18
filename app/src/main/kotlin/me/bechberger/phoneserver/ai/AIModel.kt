@@ -33,7 +33,6 @@ enum class AIModel(
     override val modelFormat: ModelFormat = ModelFormat.MEDIAPIPE
 ) : AIModelConfig {
 
-    override val id: String get() = name
     GEMMA_3_1B_IT(
         modelName = "Gemma 3n E2B IT",
         fileName = "gemma-3n-E2B-it-int4.task",
@@ -172,6 +171,8 @@ enum class AIModel(
         licenseStatement = "This response was generated using Gemma 4, a model developed by Google. Usage is subject to the Gemma Terms of Use: https://ai.google.dev/gemma/terms",
         modelFormat = ModelFormat.LITERT_LM
     );
+
+    override val id: String get() = name
 
     companion object {
         /**

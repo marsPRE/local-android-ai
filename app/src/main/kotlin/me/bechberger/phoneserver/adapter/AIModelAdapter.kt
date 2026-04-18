@@ -24,9 +24,12 @@ import me.bechberger.phoneserver.ai.AIModel
 import me.bechberger.phoneserver.ai.AIModelConfig
 import me.bechberger.phoneserver.ai.AIModelRegistry
 import me.bechberger.phoneserver.ai.AIService
+import me.bechberger.phoneserver.ai.CatalogModel
+import me.bechberger.phoneserver.ai.CatalogVariant
 import me.bechberger.phoneserver.ai.DynamicAIModel
 import me.bechberger.phoneserver.ai.ModelDetector
 import me.bechberger.phoneserver.ai.ModelFileInfo
+import me.bechberger.phoneserver.ai.ModelFormat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -34,24 +37,39 @@ import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.io.File
 
-/**
- * Adapter for displaying AI models in the model manager
- */
+sealed class ModelListItem {
+    data class SectionHeader(val title: String) : ModelListItem()
+    data class ModelItem(val config: AIModelConfig) : ModelListItem()
+}
+
 class AIModelAdapter(
     private val context: Context,
-    private var models: List<AIModelConfig>,
+    models: List<AIModelConfig>,
     private val aiService: AIService,
     private val onLoadFileRequested: (AIModelConfig) -> Unit,
     private val onTestRequested: (AIModelConfig) -> Unit,
     private val onRefreshRequested: () -> Unit
-) : RecyclerView.Adapter<AIModelAdapter.ModelViewHolder>() {
+) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
 
+    companion object {
+        private const val VIEW_TYPE_SECTION = 0
+        private const val VIEW_TYPE_MODEL = 1
+    }
+
+    private var items: List<ModelListItem> = models.map { ModelListItem.ModelItem(it) }
     private var modelInfoMap = mutableMapOf<AIModelConfig, ModelFileInfo>()
     private var processingModels = mutableSetOf<String>()
-    private var downloadingModels = mutableMapOf<String, Int>() // modelName -> progress percentage
+    private var downloadingModels = mutableMapOf<String, Int>()
+
+    private val modelItems: List<AIModelConfig>
+        get() = items.filterIsInstance<ModelListItem.ModelItem>().map { it.config }
 
     init {
         refreshModelInfo()
+    }
+
+    class SectionHeaderViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
+        val textTitle: TextView = itemView.findViewById(R.id.textSectionTitle)
     }
 
     class ModelViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
@@ -67,38 +85,45 @@ class AIModelAdapter(
         val buttonDownload: Button = itemView.findViewById(R.id.buttonDownload)
         val buttonTest: Button = itemView.findViewById(R.id.buttonTest)
         val buttonDelete: Button = itemView.findViewById(R.id.buttonDelete)
-        
-        // Download progress elements
         val layoutDownloadProgress: View = itemView.findViewById(R.id.layoutDownloadProgress)
         val textDownloadProgress: TextView = itemView.findViewById(R.id.textDownloadProgress)
         val progressBarDownload: ProgressBar = itemView.findViewById(R.id.progressBarDownload)
     }
 
-    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ModelViewHolder {
-        val view = LayoutInflater.from(parent.context).inflate(R.layout.item_ai_model, parent, false)
-        return ModelViewHolder(view)
+    override fun getItemViewType(position: Int): Int = when (items[position]) {
+        is ModelListItem.SectionHeader -> VIEW_TYPE_SECTION
+        is ModelListItem.ModelItem -> VIEW_TYPE_MODEL
     }
 
-    override fun onBindViewHolder(holder: ModelViewHolder, position: Int) {
-        val model = models[position]
+    override fun getItemCount(): Int = items.size
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+        val inflater = LayoutInflater.from(parent.context)
+        return if (viewType == VIEW_TYPE_SECTION) {
+            SectionHeaderViewHolder(inflater.inflate(R.layout.item_section_header, parent, false))
+        } else {
+            ModelViewHolder(inflater.inflate(R.layout.item_ai_model, parent, false))
+        }
+    }
+
+    override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
+        when (val item = items[position]) {
+            is ModelListItem.SectionHeader -> (holder as SectionHeaderViewHolder).textTitle.text = item.title
+            is ModelListItem.ModelItem -> bindModel(holder as ModelViewHolder, item.config)
+        }
+    }
+
+    private fun bindModel(holder: ModelViewHolder, model: AIModelConfig) {
         val fileInfo = modelInfoMap[model] ?: ModelFileInfo(model.fileName, 0, 0, false)
 
-        // Basic model info
         holder.textModelName.text = model.modelName
-        
-        // Build description with capabilities and license (cleaner, no emojis)
+
         val descriptionWithFeatures = buildString {
             append(model.description)
-            
-            // Add capabilities
             val capabilities = mutableListOf<String>()
             if (model.supportsVision) capabilities.add("Vision")
             if (model.thinking) capabilities.add("Reasoning")
-            if (capabilities.isNotEmpty()) {
-                append(" • ${capabilities.joinToString(", ")}")
-            }
-            
-            // Add full license information
+            if (capabilities.isNotEmpty()) append(" • ${capabilities.joinToString(", ")}")
             append("\n\nLicense: ")
             if (model.licenseStatement != null) {
                 append(model.licenseStatement)
@@ -107,62 +132,44 @@ class AIModelAdapter(
                 append("Please review the license terms at: ")
             }
         }
-        
-        // Create a spannable string to make the license URL clickable
+
         val fullText = descriptionWithFeatures + model.licenseUrl
         val spannable = SpannableString(fullText)
-        
-        // Find the start of the license URL
         val urlStartIndex = fullText.indexOf(model.licenseUrl)
-        if (urlStartIndex != -1) {
+        if (urlStartIndex != -1 && model.licenseUrl.isNotEmpty()) {
             val urlEndIndex = urlStartIndex + model.licenseUrl.length
-            
-            // Make the URL clickable
-            val clickableSpan = object : ClickableSpan() {
-                override fun onClick(widget: View) {
-                    openLicenseUrl(model.licenseUrl)
-                }
-            }
-            
-            spannable.setSpan(clickableSpan, urlStartIndex, urlEndIndex, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            spannable.setSpan(object : ClickableSpan() {
+                override fun onClick(widget: View) { openLicenseUrl(model.licenseUrl) }
+            }, urlStartIndex, urlEndIndex, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
             spannable.setSpan(ForegroundColorSpan(Color.BLUE), urlStartIndex, urlEndIndex, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
             spannable.setSpan(UnderlineSpan(), urlStartIndex, urlEndIndex, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         }
-        
         holder.textDescription.text = spannable
         holder.textDescription.movementMethod = LinkMovementMethod.getInstance()
-        
-        // Remove the old click listener since we now have clickable spans
         holder.textDescription.setOnClickListener(null)
 
-        // Status and file size
         val isProcessing = processingModels.contains(model.modelName)
         val isDownloading = downloadingModels.containsKey(model.modelName)
         val downloadProgress = downloadingModels[model.modelName] ?: 0
-        
-        // Hide secondary actions by default
+
         hideSecondaryActions(holder)
-        
-        // Hide download progress by default
         holder.layoutDownloadProgress.visibility = View.GONE
-        
+
         when {
             isDownloading -> {
                 updateStatusIndicator(holder, "processing")
-                holder.textStatus.text = "📥 Downloading"
+                holder.textStatus.text = "Downloading"
                 holder.textFileSize.text = "Downloading..."
                 holder.buttonPrimaryAction.text = "Downloading..."
                 holder.buttonPrimaryAction.isEnabled = false
                 holder.buttonSecondaryActions.visibility = View.GONE
-                
-                // Show download progress
                 holder.layoutDownloadProgress.visibility = View.VISIBLE
                 holder.textDownloadProgress.text = "Downloading ${model.modelName}... $downloadProgress%"
                 holder.progressBarDownload.progress = downloadProgress
             }
             isProcessing -> {
                 updateStatusIndicator(holder, "processing")
-                holder.textStatus.text = "🔄 Processing"
+                holder.textStatus.text = "Processing"
                 holder.textFileSize.text = "Loading..."
                 holder.buttonPrimaryAction.text = "Loading..."
                 holder.buttonPrimaryAction.isEnabled = false
@@ -172,7 +179,7 @@ class AIModelAdapter(
                 updateStatusIndicator(holder, "available")
                 holder.textStatus.text = "Ready"
                 holder.textFileSize.text = fileInfo.getFormattedSize()
-                holder.buttonPrimaryAction.text = "🤖 Test Model"
+                holder.buttonPrimaryAction.text = "Test Model"
                 holder.buttonPrimaryAction.isEnabled = true
                 holder.buttonSecondaryActions.visibility = View.VISIBLE
             }
@@ -180,56 +187,29 @@ class AIModelAdapter(
                 updateStatusIndicator(holder, "not_available")
                 holder.textStatus.text = "Not Available"
                 holder.textFileSize.text = "Not downloaded"
-                
-                // Make "Load File" prominent only for auth models (non-downloadable)
-                // Make "Download" prominent for non-auth models (downloadable)
-                if (model.needsAuth) {
-                    holder.buttonPrimaryAction.text = "Load File"
-                } else {
-                    holder.buttonPrimaryAction.text = "Download"
-                }
+                holder.buttonPrimaryAction.text = if (model.needsAuth) "Load File" else "Download"
                 holder.buttonPrimaryAction.isEnabled = true
                 holder.buttonSecondaryActions.visibility = View.VISIBLE
-                
-                // Set download button text based on auth requirements
-                if (model.needsAuth) {
-                    holder.buttonDownload.text = "View Source"
-                } else {
-                    holder.buttonDownload.text = "Download"
-                }
+                holder.buttonDownload.text = if (model.needsAuth) "View Source" else "Download"
             }
         }
 
-        // Primary action button
         holder.buttonPrimaryAction.setOnClickListener {
             when {
-                isProcessing -> {
-                    // Do nothing when processing
-                }
-                fileInfo.isAvailable -> {
-                    // Test the model
-                    onTestRequested(model)
-                }
+                isProcessing -> Unit
+                fileInfo.isAvailable -> onTestRequested(model)
                 model.needsAuth -> {
-                    // For auth models, prioritize "Load File" (can't download directly)
                     if (!processingModels.contains(model.modelName)) {
                         setModelProcessing(model, true)
                         onLoadFileRequested(model)
                     }
                 }
-                else -> {
-                    // For non-auth models, prioritize "Download"
-                    showDownloadDialog(model)
-                }
+                else -> showDownloadDialog(model)
             }
         }
 
-        // Secondary actions menu
-        holder.buttonSecondaryActions.setOnClickListener {
-            toggleSecondaryActions(holder)
-        }
+        holder.buttonSecondaryActions.setOnClickListener { toggleSecondaryActions(holder) }
 
-        // Secondary action buttons
         holder.buttonLoadLocal.setOnClickListener {
             if (!processingModels.contains(model.modelName)) {
                 setModelProcessing(model, true)
@@ -239,20 +219,12 @@ class AIModelAdapter(
         }
 
         holder.buttonDownload.setOnClickListener {
-            if (model.needsAuth) {
-                // Open source page for auth models
-                openDownloadUrl(model)
-            } else {
-                // Show download dialog for non-auth models
-                showDownloadDialog(model)
-            }
+            if (model.needsAuth) openDownloadUrl(model) else showDownloadDialog(model)
             hideSecondaryActions(holder)
         }
 
         holder.buttonTest.setOnClickListener {
-            if (!processingModels.contains(model.modelName)) {
-                onTestRequested(model)
-            }
+            if (!processingModels.contains(model.modelName)) onTestRequested(model)
             hideSecondaryActions(holder)
         }
 
@@ -262,25 +234,20 @@ class AIModelAdapter(
         }
     }
 
-    override fun getItemCount(): Int = models.size
-
     private fun showDownloadDialog(model: AIModelConfig) {
         val staticModel = model as? AIModel
         val message = buildString {
             append("Download ${model.modelName}?\n\n")
-            append("📱 Model: ${model.modelName}\n")
-            append("📄 File: ${model.fileName}\n")
+            append("Model: ${model.modelName}\n")
+            append("File: ${model.fileName}\n")
             val capabilities = mutableListOf("Text")
             if (model.supportsVision) capabilities.add("Vision")
             if (model.thinking) capabilities.add("Reasoning")
-            append("\n✨ Capabilities: ${capabilities.joinToString(", ")}\n")
+            append("\nCapabilities: ${capabilities.joinToString(", ")}\n")
             if (staticModel != null) {
-                append("🔗 Source: ${staticModel.url}\n\n")
-                if (model.needsAuth) {
-                    append("⚠️ Requires Hugging Face auth.\n1. Log in\n2. Accept license\n3. Download manually")
-                } else {
-                    append("✅ Can be downloaded directly!")
-                }
+                append("Source: ${staticModel.url}\n\n")
+                if (model.needsAuth) append("Requires Hugging Face auth.\n1. Log in\n2. Accept license\n3. Download manually")
+                else append("Can be downloaded directly!")
             } else {
                 append("\nThis is a locally imported model.")
             }
@@ -293,10 +260,10 @@ class AIModelAdapter(
 
         if (staticModel != null) {
             if (model.needsAuth) {
-                dialogBuilder.setPositiveButton("🌐 Open Source") { _, _ -> openDownloadUrl(model) }
+                dialogBuilder.setPositiveButton("Open Source") { _, _ -> openDownloadUrl(model) }
             } else {
-                dialogBuilder.setPositiveButton("📥 Download") { _, _ -> startDirectDownload(model) }
-                dialogBuilder.setNeutralButton("🌐 Open Browser") { _, _ -> openDownloadUrl(model) }
+                dialogBuilder.setPositiveButton("Download") { _, _ -> startDirectDownload(model) }
+                dialogBuilder.setNeutralButton("Open Browser") { _, _ -> openDownloadUrl(model) }
             }
         }
         dialogBuilder.show()
@@ -318,12 +285,12 @@ class AIModelAdapter(
                 withContext(Dispatchers.Main) {
                     downloadingModels.remove(model.modelName)
                     if (result.success) {
-                        Toast.makeText(context, "✅ ${model.modelName} downloaded successfully!", Toast.LENGTH_LONG).show()
+                        Toast.makeText(context, "${model.modelName} downloaded!", Toast.LENGTH_LONG).show()
                         refreshModelInfo()
                         setModelProcessing(model, true)
                         testModelAfterDownload(model)
                     } else {
-                        Toast.makeText(context, "❌ Download failed: ${result.message}", Toast.LENGTH_LONG).show()
+                        Toast.makeText(context, "Download failed: ${result.message}", Toast.LENGTH_LONG).show()
                     }
                     notifyDataSetChanged()
                 }
@@ -331,8 +298,7 @@ class AIModelAdapter(
                 withContext(Dispatchers.Main) {
                     downloadingModels.remove(model.modelName)
                     notifyDataSetChanged()
-                    Timber.e(e, "Download failed for ${model.modelName}")
-                    Toast.makeText(context, "❌ Download failed: ${e.message}", Toast.LENGTH_LONG).show()
+                    Toast.makeText(context, "Download failed: ${e.message}", Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -346,9 +312,9 @@ class AIModelAdapter(
                 withContext(Dispatchers.Main) {
                     setModelProcessing(model, false)
                     if (testResult.success) {
-                        Toast.makeText(context, "🤖 ${model.modelName} is ready to use!", Toast.LENGTH_LONG).show()
+                        Toast.makeText(context, "${model.modelName} is ready!", Toast.LENGTH_LONG).show()
                     } else {
-                        Toast.makeText(context, "⚠️ Model downloaded but test failed: ${testResult.message}", Toast.LENGTH_LONG).show()
+                        Toast.makeText(context, "Test failed: ${testResult.message}", Toast.LENGTH_LONG).show()
                     }
                     refreshModelInfo()
                     notifyDataSetChanged()
@@ -358,8 +324,6 @@ class AIModelAdapter(
                     setModelProcessing(model, false)
                     refreshModelInfo()
                     notifyDataSetChanged()
-                    Timber.e(e, "Model test failed after download")
-                    Toast.makeText(context, "⚠️ Model downloaded but couldn't be tested", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -368,41 +332,27 @@ class AIModelAdapter(
     private fun openDownloadUrl(model: AIModelConfig) {
         val staticModel = model as? AIModel ?: return
         try {
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(staticModel.url))
-            context.startActivity(intent)
-            val helpMessage = if (model.needsAuth) {
-                "After downloading, use 'Load File' to import the model."
-            } else {
-                "After downloading, use 'Load File' to import the model to the app."
-            }
-            Toast.makeText(context, helpMessage, Toast.LENGTH_LONG).show()
+            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(staticModel.url)))
+            Toast.makeText(context, "After downloading, use 'Load File' to import.", Toast.LENGTH_LONG).show()
         } catch (e: Exception) {
-            Timber.e(e, "Failed to open download URL")
             Toast.makeText(context, "Failed to open browser", Toast.LENGTH_SHORT).show()
         }
     }
 
     private fun openLicenseUrl(licenseUrl: String) {
         try {
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(licenseUrl))
-            context.startActivity(intent)
-            Toast.makeText(context, "Opening license terms...", Toast.LENGTH_SHORT).show()
+            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(licenseUrl)))
         } catch (e: Exception) {
-            Timber.e(e, "Failed to open license URL")
             Toast.makeText(context, "Failed to open license URL", Toast.LENGTH_SHORT).show()
         }
     }
 
     private fun showDeleteConfirmation(model: AIModelConfig, holder: ModelViewHolder) {
         val fileInfo = modelInfoMap[model]
-        val message = "Delete ${model.modelName}?\n\nThis will remove the ${fileInfo?.getFormattedSize() ?: "model"} file from your device."
-
         AlertDialog.Builder(context)
             .setTitle("Delete AI Model")
-            .setMessage(message)
-            .setPositiveButton("🗑️ Delete") { _, _ ->
-                deleteModel(model)
-            }
+            .setMessage("Delete ${model.modelName}?\n\nThis will remove the ${fileInfo?.getFormattedSize() ?: "model"} file from your device.")
+            .setPositiveButton("Delete") { _, _ -> deleteModel(model) }
             .setNegativeButton("Cancel", null)
             .show()
     }
@@ -411,10 +361,13 @@ class AIModelAdapter(
         try {
             if (model is DynamicAIModel) {
                 AIModelRegistry.removeDynamicModel(context, model.id)
+                // Also delete the actual file if it's in our imported dir
+                if (model.absoluteFilePath.isNotEmpty()) {
+                    File(model.absoluteFilePath).takeIf { it.exists() }?.delete()
+                }
                 Toast.makeText(context, "Removed ${model.modelName}", Toast.LENGTH_SHORT).show()
             } else {
-                val referenceRemoved = ModelDetector.removeModelReference(context, model)
-                if (referenceRemoved) {
+                if (ModelDetector.removeModelReference(context, model)) {
                     Toast.makeText(context, "Removed ${model.modelName} reference", Toast.LENGTH_SHORT).show()
                 } else {
                     Toast.makeText(context, "Failed to remove model reference", Toast.LENGTH_SHORT).show()
@@ -431,21 +384,13 @@ class AIModelAdapter(
     }
 
     private fun toggleSecondaryActions(holder: ModelViewHolder) {
-        if (holder.layoutSecondaryActions.visibility == View.VISIBLE) {
-            hideSecondaryActions(holder)
-        } else {
-            showSecondaryActions(holder)
-        }
+        if (holder.layoutSecondaryActions.visibility == View.VISIBLE) hideSecondaryActions(holder)
+        else showSecondaryActions(holder)
     }
-    
-    private fun showSecondaryActions(holder: ModelViewHolder) {
-        holder.layoutSecondaryActions.visibility = View.VISIBLE
-    }
-    
-    private fun hideSecondaryActions(holder: ModelViewHolder) {
-        holder.layoutSecondaryActions.visibility = View.GONE
-    }
-    
+
+    private fun showSecondaryActions(holder: ModelViewHolder) { holder.layoutSecondaryActions.visibility = View.VISIBLE }
+    private fun hideSecondaryActions(holder: ModelViewHolder) { holder.layoutSecondaryActions.visibility = View.GONE }
+
     private fun updateStatusIndicator(holder: ModelViewHolder, status: String) {
         when (status) {
             "available" -> {
@@ -465,23 +410,72 @@ class AIModelAdapter(
 
     fun refreshModelInfo() {
         modelInfoMap.clear()
-        for (model in models) {
+        for (model in modelItems) {
             modelInfoMap[model] = ModelDetector.getModelFileInfo(context, model)
         }
     }
 
+    /** Flat list with no section headers — backward-compatible. */
     fun updateModels(newModels: List<AIModelConfig>) {
-        models = newModels
+        items = newModels.map { ModelListItem.ModelItem(it) }
+        refreshModelInfo()
+        notifyDataSetChanged()
+    }
+
+    /** Builds grouped sections: Ready / Available to Download / From Edge Gallery / Imported (unmatched). */
+    fun updateWithSections(
+        ready: List<AIModelConfig>,
+        downloadable: List<AIModel>,
+        edgeGalleryHints: List<Pair<CatalogModel, CatalogVariant>>,
+        unknown: List<DynamicAIModel>
+    ) {
+        val newItems = mutableListOf<ModelListItem>()
+
+        if (ready.isNotEmpty()) {
+            newItems += ModelListItem.SectionHeader("Ready")
+            ready.forEach { newItems += ModelListItem.ModelItem(it) }
+        }
+        if (downloadable.isNotEmpty()) {
+            newItems += ModelListItem.SectionHeader("Available to Download")
+            downloadable.forEach { newItems += ModelListItem.ModelItem(it) }
+        }
+        if (edgeGalleryHints.isNotEmpty()) {
+            newItems += ModelListItem.SectionHeader("From Edge Gallery")
+            edgeGalleryHints.forEach { (catalogModel, variant) ->
+                newItems += ModelListItem.ModelItem(
+                    DynamicAIModel(
+                        id = "catalog_hint_${variant.id}",
+                        modelName = "${catalogModel.displayName} (Gallery)",
+                        fileName = variant.fileNamePatterns.firstOrNull() ?: variant.id,
+                        absoluteFilePath = "",
+                        licenseUrl = catalogModel.license.url,
+                        thinking = variant.thinking,
+                        supportsVision = variant.supportsVision,
+                        maxTokens = variant.maxTokens,
+                        temperature = variant.temperature.toFloat(),
+                        topK = variant.topK,
+                        topP = variant.topP.toFloat(),
+                        needsAuth = catalogModel.license.needsAuth,
+                        licenseStatement = catalogModel.license.statement,
+                        modelFormat = if (variant.format == "LITERT_LM") ModelFormat.LITERT_LM else ModelFormat.MEDIAPIPE,
+                        description = "Copy from Edge Gallery to Downloads — will be auto-detected on next open."
+                    )
+                )
+            }
+        }
+        if (unknown.isNotEmpty()) {
+            newItems += ModelListItem.SectionHeader("Imported (unmatched)")
+            unknown.forEach { newItems += ModelListItem.ModelItem(it) }
+        }
+
+        items = newItems
         refreshModelInfo()
         notifyDataSetChanged()
     }
 
     fun setModelProcessing(model: AIModelConfig, isProcessing: Boolean) {
-        if (isProcessing) {
-            processingModels.add(model.modelName)
-        } else {
-            processingModels.remove(model.modelName)
-        }
+        if (isProcessing) processingModels.add(model.modelName)
+        else processingModels.remove(model.modelName)
         notifyDataSetChanged()
     }
 
