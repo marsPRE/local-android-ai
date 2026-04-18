@@ -8,7 +8,7 @@ data class DynamicAIModel(
     override val id: String,
     override val modelName: String,
     override val fileName: String,
-    val absoluteFilePath: String,
+    override val absoluteFilePath: String,
     override val licenseUrl: String = "",
     override val preferredBackend: Any? = null,
     override val thinking: Boolean = false,

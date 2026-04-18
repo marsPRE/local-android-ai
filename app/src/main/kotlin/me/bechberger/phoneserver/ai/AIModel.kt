@@ -173,6 +173,7 @@ enum class AIModel(
     );
 
     override val id: String get() = name
+    override val absoluteFilePath: String get() = ""
 
     companion object {
         /**

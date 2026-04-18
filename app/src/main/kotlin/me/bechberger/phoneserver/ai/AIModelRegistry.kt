@@ -67,36 +67,33 @@ object AIModelRegistry {
      */
     fun scanAndAutoImport(context: Context): Int {
         init(context)
+
+        // Scan Downloads root and any subdirectories one level deep
         val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
         if (!downloadsDir.exists() || !downloadsDir.canRead()) return 0
 
-        val importDir = (context.getExternalFilesDir("models") ?: context.filesDir)
-            .let { File(it, "imported") }
-        if (!importDir.exists()) importDir.mkdirs()
+        val modelFiles = mutableListOf<File>()
+        downloadsDir.listFiles()?.forEach { entry ->
+            if (entry.isFile && isModelFile(entry)) modelFiles.add(entry)
+            else if (entry.isDirectory) entry.listFiles { f -> isModelFile(f) }?.let { modelFiles.addAll(it) }
+        }
 
-        val modelFiles = downloadsDir.listFiles { f ->
-            f.isFile && (f.name.endsWith(".litertlm") || f.name.endsWith(".task")) && f.length() > 0
-        } ?: return 0
-
-        val knownFileNames = getAllModels(context).map { it.fileName }.toSet()
+        val knownFilePaths = getAllModels(context).map { it.absoluteFilePath }.toSet()
         var imported = 0
 
-        for (src in modelFiles) {
-            if (src.name in knownFileNames) continue
-            val dest = File(importDir, src.name)
-            if (!dest.exists() || dest.length() != src.length()) {
-                try { src.copyTo(dest, overwrite = true) }
-                catch (e: Exception) { Timber.e(e, "scanAndAutoImport: copy failed for ${src.name}"); continue }
-            }
-            val alreadyRegistered = dynamicModels.any { it.fileName == src.name }
+        for (file in modelFiles) {
+            if (file.absolutePath in knownFilePaths) continue
+            val alreadyRegistered = dynamicModels.any { it.absoluteFilePath == file.absolutePath }
             if (!alreadyRegistered) {
-                addDynamicModel(context, buildDynamicModel(context, dest))
+                addDynamicModel(context, buildDynamicModel(context, file))
                 imported++
             }
         }
-        Timber.i("scanAndAutoImport: imported $imported new model(s)")
+        Timber.i("scanAndAutoImport: registered $imported new model(s) from Downloads")
         return imported
     }
+
+    private fun isModelFile(f: File) = f.isFile && (f.name.endsWith(".litertlm") || f.name.endsWith(".task")) && f.length() > 0
 
     private fun buildDynamicModel(context: Context, file: File): DynamicAIModel {
         val match = CatalogLoader.findVariantForFile(context, file.name)

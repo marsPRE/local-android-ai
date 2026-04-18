@@ -7,6 +7,7 @@ interface AIModelConfig {
     val id: String
     val modelName: String
     val fileName: String
+    val absoluteFilePath: String
     val licenseUrl: String
     val preferredBackend: Any?
     val thinking: Boolean
