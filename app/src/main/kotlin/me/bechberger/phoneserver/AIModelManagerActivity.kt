@@ -225,30 +225,15 @@ class AIModelManagerActivity : AppCompatActivity() {
         CoroutineScope(Dispatchers.Main).launch {
             var imported = 0
             for (file in files) {
-                Toast.makeText(this@AIModelManagerActivity, "Importing ${file.name}...", Toast.LENGTH_SHORT).show()
-                val path = withContext(Dispatchers.IO) { copyFileToImportedModels(file) }
-                if (path != null) {
-                    val dynModel = DynamicAIModel.fromFile(path)
-                    AIModelRegistry.addDynamicModel(this@AIModelManagerActivity, dynModel)
-                    imported++
-                }
+                val knownPaths = AIModelRegistry.getAllModels(this@AIModelManagerActivity)
+                    .map { it.absoluteFilePath }.toSet()
+                if (file.absolutePath in knownPaths) continue
+                val dynModel = DynamicAIModel.fromFile(file.absolutePath)
+                AIModelRegistry.addDynamicModel(this@AIModelManagerActivity, dynModel)
+                imported++
             }
-            Toast.makeText(this@AIModelManagerActivity, "Imported $imported/${files.size} models", Toast.LENGTH_LONG).show()
+            Toast.makeText(this@AIModelManagerActivity, "Registered $imported/${files.size} models", Toast.LENGTH_LONG).show()
             refreshModels()
-        }
-    }
-
-    private fun copyFileToImportedModels(file: File): String? {
-        return try {
-            val modelsDir = getExternalFilesDir(null)?.let { File(it, "imported_models") }
-                ?: File(filesDir, "imported_models")
-            if (!modelsDir.exists()) modelsDir.mkdirs()
-            val targetFile = File(modelsDir, file.name)
-            file.copyTo(targetFile, overwrite = true)
-            if (targetFile.exists() && targetFile.length() > 0) targetFile.absolutePath else null
-        } catch (e: Exception) {
-            Timber.e(e, "Failed to copy model: ${file.name}")
-            null
         }
     }
 
@@ -386,11 +371,11 @@ class AIModelManagerActivity : AppCompatActivity() {
             
             Timber.d("✅ Successfully opened input stream from URI")
 
-            // Get a suitable directory for storing the model file
-            // Use app-specific external storage to avoid permission issues on modern Android
-            val modelsDir = getExternalFilesDir(null)?.let { appExternal ->
-                File(appExternal, "imported_models")
-            } ?: File(filesDir, "imported_models")
+            // Copy to Downloads/ai-models so the auto-scanner picks it up
+            val modelsDir = File(
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                "ai-models"
+            )
             
             if (!modelsDir.exists()) {
                 val created = modelsDir.mkdirs()
@@ -442,39 +427,20 @@ class AIModelManagerActivity : AppCompatActivity() {
             if (targetFile.exists() && targetFile.length() > 0) {
                 Timber.i("Successfully copied model file: ${targetFile.absolutePath} (${targetFile.length()} bytes)")
                 
-                // Create reference to the copied file
-                val success = ModelDetector.createModelReference(this@AIModelManagerActivity, model, targetFile.absolutePath)
-                if (success) {
-                    Timber.i("Created reference for imported model: ${model.modelName}")
-                    
-                    // Remove backup if copy was successful
-                    val backupFile = File(modelsDir, "${model.fileName}.backup")
-                    if (backupFile.exists()) {
-                        backupFile.delete()
-                    }
-                    
-                    true
-                } else {
-                    Timber.e("Failed to create model reference")
-                    
-                    // Clean up the copied file and restore backup
-                    targetFile.delete()
-                    val backupFile = File(modelsDir, "${model.fileName}.backup")
-                    if (backupFile.exists()) {
-                        backupFile.renameTo(targetFile)
-                    }
-                    
-                    false
-                }
+                // Register the copied file in-place
+                val dynModel = DynamicAIModel.fromFile(targetFile.absolutePath)
+                AIModelRegistry.addDynamicModel(this@AIModelManagerActivity, dynModel)
+                Timber.i("Registered imported model: ${model.modelName} at ${targetFile.absolutePath}")
+
+                // Remove backup if copy was successful
+                val backupFile = File(modelsDir, "${model.fileName}.backup")
+                if (backupFile.exists()) backupFile.delete()
+
+                true
             } else {
                 Timber.e("Model file copy failed - file is empty or doesn't exist")
-                
-                // Restore backup if copy failed
                 val backupFile = File(modelsDir, "${model.fileName}.backup")
-                if (backupFile.exists()) {
-                    backupFile.renameTo(targetFile)
-                }
-                
+                if (backupFile.exists()) backupFile.renameTo(targetFile)
                 false
             }
         } catch (e: SecurityException) {

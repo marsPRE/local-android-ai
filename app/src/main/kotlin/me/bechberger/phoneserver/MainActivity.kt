@@ -483,12 +483,12 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         Timber.d("MainActivity onResume - checking server status")
         checkServerStatus()
-        // Refresh UI to reflect current server state
         updateUI()
-        // Refresh request logs in case server processed requests while app was backgrounded
         observeRequestLogs()
-        // Update AI models button to reflect current model availability
-        updateAIModelsButtonText()
+        lifecycleScope.launch(Dispatchers.IO) {
+            me.bechberger.phoneserver.ai.AIModelRegistry.scanAndAutoImport(this@MainActivity)
+            withContext(Dispatchers.Main) { updateAIModelsButtonText() }
+        }
     }
 
     override fun onPause() {
@@ -1200,7 +1200,7 @@ class MainActivity : AppCompatActivity() {
                 return@launch
             }
             
-            val modelNames = availableModels.map { it.name }
+            val modelNames = availableModels.map { it.id }
             val modelDisplayNames = availableModels.map { "${it.modelName} (${it.fileName})" }
             
             val modelAdapter = android.widget.ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_item, modelDisplayNames)
