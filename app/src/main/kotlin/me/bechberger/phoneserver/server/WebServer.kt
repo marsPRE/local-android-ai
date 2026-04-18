@@ -75,17 +75,30 @@ class WebServer(private val context: Context) {
     }
 
     private fun Application.configureServer() {
-        // Request logging middleware - automatically logs all incoming requests except /ai/text
+        // Request logging + CORS headers on every response
         intercept(ApplicationCallPipeline.Monitoring) {
             val startTime = System.currentTimeMillis()
             val uri = call.request.uri
             val method = call.request.httpMethod.value
             val clientIp = call.request.local.remoteHost
             val userAgent = call.request.headers["User-Agent"]
-            
-            // Skip automatic logging for /ai/text - it handles its own logging
-            val skipAutoLogging = uri == "/ai/text" && method == "POST"
-            
+
+            // Add CORS headers to every response unconditionally
+            call.response.headers.append("Access-Control-Allow-Origin", "*")
+            call.response.headers.append("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+            call.response.headers.append("Access-Control-Allow-Headers", "*")
+            call.response.headers.append("Access-Control-Allow-Private-Network", "true")
+
+            // Handle OPTIONS preflight immediately before any route processing
+            if (call.request.httpMethod == io.ktor.http.HttpMethod.Options) {
+                call.respond(HttpStatusCode.NoContent)
+                return@intercept
+            }
+
+            // Skip automatic logging for endpoints that handle their own logging
+            val skipAutoLogging = ((uri == "/ai/text" || uri.endsWith("/chat/completions")) && method == "POST")
+                || (uri.endsWith("/models") && method == "GET")
+
             try {
                 proceed()
                 
@@ -134,14 +147,7 @@ class WebServer(private val context: Context) {
             }
         }
         
-        install(CORS) {
-            allowMethod(HttpMethod.Get)
-            allowMethod(HttpMethod.Post)
-            allowMethod(HttpMethod.Options)
-            allowHeader(HttpHeaders.ContentType)
-            allowHeader(HttpHeaders.Authorization)
-            anyHost()
-        }
+        // CORS handled manually in Monitoring intercept above — no plugin needed
         
         install(StatusPages) {
             exception<Throwable> { call, cause ->
@@ -1709,25 +1715,37 @@ class WebServer(private val context: Context) {
                 }
             }
 
+            // Universal OPTIONS preflight handler (fixes CORS for all paths)
+            options("{...}") {
+                call.response.headers.append("Access-Control-Allow-Origin", "*")
+                call.response.headers.append("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+                call.response.headers.append("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
+                call.respond(HttpStatusCode.NoContent)
+            }
+
             // ── OpenAI-compatible API (/v1) ───────────────────────────────────
             route("/v1") {
 
                 /** GET /v1/models — list available models in OpenAI format */
                 get("/models") {
-                    val models = AIModelRegistry.getDynamicModels(this@WebServer.context)
-                        .filter { java.io.File(it.absoluteFilePath).exists() }
-                    call.respond(mapOf(
+                    val startTime = System.currentTimeMillis()
+                    val clientIp = call.request.local.remoteHost
+                    val userAgent = call.request.headers["User-Agent"]
+                    val models = AIModelRegistry.getReadyModels(this@WebServer.context)
+                    val responseBody = mapOf(
                         "object" to "list",
                         "data" to models.map { m ->
-                            mapOf(
-                                "id" to m.id,
-                                "object" to "model",
-                                "created" to (System.currentTimeMillis() / 1000L),
-                                "owned_by" to "local",
-                                "name" to m.modelName
-                            )
+                            mapOf("id" to m.id, "object" to "model", "created" to (System.currentTimeMillis() / 1000L), "owned_by" to "local")
                         }
-                    ))
+                    )
+                    call.respond(responseBody)
+                    RequestLogger.logRequest(
+                        method = "GET", path = "/v1/models", clientIp = clientIp,
+                        statusCode = 200, responseTime = System.currentTimeMillis() - startTime,
+                        userAgent = userAgent,
+                        responseData = com.google.gson.Gson().toJson(responseBody),
+                        responseType = "json"
+                    )
                 }
 
                 /** POST /v1/chat/completions — OpenAI-compatible chat endpoint */
@@ -1746,6 +1764,7 @@ class WebServer(private val context: Context) {
                     val messagesArr = json.getAsJsonArray("messages")
                     val maxTokens = json.get("max_tokens")?.asInt
                     val temperature = json.get("temperature")?.asFloat
+                    val stream = json.get("stream")?.asBoolean ?: false
 
                     if (messagesArr == null || messagesArr.size() == 0) {
                         call.respond(HttpStatusCode.BadRequest, mapOf("error" to "messages array required"))
@@ -1774,32 +1793,202 @@ class WebServer(private val context: Context) {
 
                     try {
                         val aiResponse = aiService.handleTextRequest(request)
+                        val id = "chatcmpl-${System.currentTimeMillis()}"
                         val created = System.currentTimeMillis() / 1000L
-                        call.respond(mapOf(
-                            "id" to "chatcmpl-${System.currentTimeMillis()}",
-                            "object" to "chat.completion",
-                            "created" to created,
-                            "model" to modelId,
-                            "choices" to listOf(mapOf(
-                                "index" to 0,
-                                "message" to mapOf(
-                                    "role" to "assistant",
-                                    "content" to aiResponse.response
-                                ),
-                                "finish_reason" to "stop"
-                            )),
-                            "usage" to mapOf(
-                                "prompt_tokens" to 0,
-                                "completion_tokens" to aiResponse.metadata.tokenCount,
-                                "total_tokens" to aiResponse.metadata.tokenCount
+
+                        if (stream) {
+                            val contentChunk = "{\"id\":\"$id\",\"object\":\"chat.completion.chunk\",\"created\":$created,\"model\":${gson.toJson(modelId)},\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":${gson.toJson(aiResponse.response)}},\"finish_reason\":null}]}"
+                            val doneChunk = "{\"id\":\"$id\",\"object\":\"chat.completion.chunk\",\"created\":$created,\"model\":${gson.toJson(modelId)},\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}"
+                            call.respondText(
+                                "data: $contentChunk\n\ndata: $doneChunk\n\ndata: [DONE]\n\n",
+                                ContentType.parse("text/event-stream")
                             )
-                        ))
+                        } else {
+                            call.respond(mapOf(
+                                "id" to id,
+                                "object" to "chat.completion",
+                                "created" to created,
+                                "model" to modelId,
+                                "choices" to listOf(mapOf(
+                                    "index" to 0,
+                                    "message" to mapOf("role" to "assistant", "content" to aiResponse.response),
+                                    "finish_reason" to "stop"
+                                )),
+                                "usage" to mapOf(
+                                    "prompt_tokens" to 0,
+                                    "completion_tokens" to aiResponse.metadata.tokenCount,
+                                    "total_tokens" to aiResponse.metadata.tokenCount
+                                )
+                            ))
+                        }
                     } catch (e: Exception) {
                         Timber.e(e, "OpenAI chat completions error")
                         call.respond(HttpStatusCode.InternalServerError, mapOf(
                             "error" to mapOf("message" to (e.message ?: "inference failed"), "type" to "server_error")
                         ))
                     }
+                }
+            }
+
+            // ── Ollama-compatible API (/api) ─────────────────────────────────
+            route("/api") {
+                get("/version") {
+                    call.respond(mapOf("version" to "0.1.0"))
+                }
+
+                get("/tags") {
+                    val models = AIModelRegistry.getDynamicModels(this@WebServer.context)
+                        .filter { java.io.File(it.absoluteFilePath).exists() }
+                    call.respond(mapOf("models" to models.map { m ->
+                        mapOf(
+                            "name" to m.id,
+                            "model" to m.id,
+                            "modified_at" to "2024-01-01T00:00:00Z",
+                            "size" to java.io.File(m.absoluteFilePath).length(),
+                            "digest" to m.id,
+                            "details" to mapOf(
+                                "format" to m.modelFormat.name.lowercase(),
+                                "family" to m.modelName,
+                                "parameter_size" to "unknown",
+                                "quantization_level" to "unknown"
+                            )
+                        )
+                    }))
+                }
+
+                post("/chat") {
+                    val bodyText = call.receiveText()
+                    val gson = com.google.gson.Gson()
+                    val json = try { gson.fromJson(bodyText, com.google.gson.JsonObject::class.java) } catch (e: Exception) {
+                        call.respond(HttpStatusCode.BadRequest, mapOf("error" to "Invalid JSON")); return@post
+                    }
+                    val modelId = json.get("model")?.asString ?: ""
+                    val messagesArr = json.getAsJsonArray("messages")
+                    val temperature = json.get("options")?.asJsonObject?.get("temperature")?.asFloat
+                    val maxTokens = json.get("options")?.asJsonObject?.get("num_predict")?.asInt
+                    if (messagesArr == null || messagesArr.size() == 0) {
+                        call.respond(HttpStatusCode.BadRequest, mapOf("error" to "messages required")); return@post
+                    }
+                    val model = AIModelRegistry.fromString(modelId, this@WebServer.context)
+                    if (model == null) { call.respond(HttpStatusCode.NotFound, mapOf("error" to "model '$modelId' not found")); return@post }
+                    val prompt = buildOpenAiPrompt(model.modelName, messagesArr)
+                    val request = me.bechberger.phoneserver.ai.AITextRequest(text = prompt, model = modelId, temperature = temperature, maxTokens = maxTokens, rawPrompt = true)
+                    try {
+                        val aiResponse = aiService.handleTextRequest(request)
+                        call.respond(mapOf(
+                            "model" to modelId,
+                            "created_at" to java.time.Instant.now().toString(),
+                            "message" to mapOf("role" to "assistant", "content" to aiResponse.response),
+                            "done" to true,
+                            "total_duration" to (aiResponse.metadata.inferenceTime * 1_000_000L),
+                            "eval_count" to aiResponse.metadata.tokenCount
+                        ))
+                    } catch (e: Exception) {
+                        call.respond(HttpStatusCode.InternalServerError, mapOf("error" to (e.message ?: "inference failed")))
+                    }
+                }
+
+                post("/generate") {
+                    val bodyText = call.receiveText()
+                    val gson = com.google.gson.Gson()
+                    val json = try { gson.fromJson(bodyText, com.google.gson.JsonObject::class.java) } catch (e: Exception) {
+                        call.respond(HttpStatusCode.BadRequest, mapOf("error" to "Invalid JSON")); return@post
+                    }
+                    val modelId = json.get("model")?.asString ?: ""
+                    val prompt = json.get("prompt")?.asString ?: ""
+                    val temperature = json.get("options")?.asJsonObject?.get("temperature")?.asFloat
+                    val maxTokens = json.get("options")?.asJsonObject?.get("num_predict")?.asInt
+                    val model = AIModelRegistry.fromString(modelId, this@WebServer.context)
+                    if (model == null) { call.respond(HttpStatusCode.NotFound, mapOf("error" to "model '$modelId' not found")); return@post }
+                    val request = me.bechberger.phoneserver.ai.AITextRequest(text = prompt, model = modelId, temperature = temperature, maxTokens = maxTokens)
+                    try {
+                        val aiResponse = aiService.handleTextRequest(request)
+                        call.respond(mapOf(
+                            "model" to modelId,
+                            "created_at" to java.time.Instant.now().toString(),
+                            "response" to aiResponse.response,
+                            "done" to true,
+                            "total_duration" to (aiResponse.metadata.inferenceTime * 1_000_000L),
+                            "eval_count" to aiResponse.metadata.tokenCount
+                        ))
+                    } catch (e: Exception) {
+                        call.respond(HttpStatusCode.InternalServerError, mapOf("error" to (e.message ?: "inference failed")))
+                    }
+                }
+            }
+
+            // /models without /v1 prefix → OpenAI format
+            get("/models") {
+                val startTime = System.currentTimeMillis()
+                val clientIp = call.request.local.remoteHost
+                val userAgent = call.request.headers["User-Agent"]
+                val models = AIModelRegistry.getReadyModels(this@WebServer.context)
+                val responseBody = mapOf(
+                    "object" to "list",
+                    "data" to models.map { m ->
+                        mapOf("id" to m.id, "object" to "model", "created" to (System.currentTimeMillis() / 1000L), "owned_by" to "local")
+                    }
+                )
+                call.respond(responseBody)
+                RequestLogger.logRequest(
+                    method = "GET", path = "/models", clientIp = clientIp,
+                    statusCode = 200, responseTime = System.currentTimeMillis() - startTime,
+                    userAgent = userAgent,
+                    responseData = com.google.gson.Gson().toJson(responseBody),
+                    responseType = "json"
+                )
+            }
+
+            post("/chat/completions") {
+                val bodyText = call.receiveText()
+                val gson = com.google.gson.Gson()
+                val json = try { gson.fromJson(bodyText, com.google.gson.JsonObject::class.java) } catch (e: Exception) {
+                    call.respond(HttpStatusCode.BadRequest, mapOf("error" to "Invalid JSON")); return@post
+                }
+                val modelId = json.get("model")?.asString ?: ""
+                val messagesArr = json.getAsJsonArray("messages")
+                val maxTokens = json.get("max_tokens")?.asInt
+                val temperature = json.get("temperature")?.asFloat
+                val stream = json.get("stream")?.asBoolean ?: false
+                if (messagesArr == null || messagesArr.size() == 0) { call.respond(HttpStatusCode.BadRequest, mapOf("error" to "messages array required")); return@post }
+                val model = AIModelRegistry.fromString(modelId, this@WebServer.context)
+                if (model == null) { call.respond(HttpStatusCode.NotFound, mapOf("error" to mapOf("message" to "Model '$modelId' not found", "type" to "invalid_request_error"))); return@post }
+                val prompt = buildOpenAiPrompt(model.modelName, messagesArr)
+                val request = me.bechberger.phoneserver.ai.AITextRequest(text = prompt, model = modelId, temperature = temperature, maxTokens = maxTokens, rawPrompt = true)
+                try {
+                    val aiResponse = aiService.handleTextRequest(request)
+                    val id = "chatcmpl-${System.currentTimeMillis()}"
+                    val created = System.currentTimeMillis() / 1000L
+                    if (stream) {
+                        val contentChunk = "{\"id\":\"$id\",\"object\":\"chat.completion.chunk\",\"created\":$created,\"model\":${gson.toJson(modelId)},\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":${gson.toJson(aiResponse.response)}},\"finish_reason\":null}]}"
+                        val doneChunk = "{\"id\":\"$id\",\"object\":\"chat.completion.chunk\",\"created\":$created,\"model\":${gson.toJson(modelId)},\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}"
+                        call.respondText("data: $contentChunk\n\ndata: $doneChunk\n\ndata: [DONE]\n\n", ContentType.parse("text/event-stream"))
+                    } else {
+                        call.respond(mapOf(
+                            "id" to id, "object" to "chat.completion",
+                            "created" to created, "model" to modelId,
+                            "choices" to listOf(mapOf("index" to 0, "message" to mapOf("role" to "assistant", "content" to aiResponse.response), "finish_reason" to "stop")),
+                            "usage" to mapOf("prompt_tokens" to 0, "completion_tokens" to aiResponse.metadata.tokenCount, "total_tokens" to aiResponse.metadata.tokenCount)
+                        ))
+                    }
+                } catch (e: Exception) {
+                    call.respond(HttpStatusCode.InternalServerError, mapOf("error" to mapOf("message" to (e.message ?: "inference failed"), "type" to "server_error")))
+                }
+            }
+
+            // Catch-all: log any unmatched path so we can see what clients request
+            route("{...}") {
+                handle {
+                    val method = call.request.httpMethod.value
+                    val uri = call.request.uri
+                    val headers = call.request.headers.entries().joinToString(", ") { "${it.key}: ${it.value.firstOrNull()}" }
+                    Timber.w("UNMATCHED $method $uri | Headers: $headers")
+                    RequestLogger.logRequest(
+                        method = method, path = uri, clientIp = call.request.local.remoteHost,
+                        statusCode = 404, responseTime = 0L, userAgent = call.request.headers["User-Agent"],
+                        responseData = "No route for $method $uri", responseType = "error"
+                    )
+                    call.respond(HttpStatusCode.NotFound, mapOf("error" to "Not found: $uri"))
                 }
             }
 

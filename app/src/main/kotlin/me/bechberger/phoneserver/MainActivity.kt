@@ -712,11 +712,12 @@ class MainActivity : AppCompatActivity() {
             statusCode = 200,
             responseTime = 0L,
             userAgent = "AI Phone Server",
-            responseData = """{"status": "started", "timestamp": ${System.currentTimeMillis()}, "port": 8005}""",
+            responseData = """{"status": "started", "timestamp": ${System.currentTimeMillis()}, "port": ${me.bechberger.phoneserver.manager.ServerSettings.getPort(this)}}""",
             responseType = "json"
         )
-        
-        Toast.makeText(this, "AI Phone Server started on port 8005", Toast.LENGTH_SHORT).show()
+
+        val port = me.bechberger.phoneserver.manager.ServerSettings.getPort(this)
+        Toast.makeText(this, "AI Phone Server started on port $port", Toast.LENGTH_SHORT).show()
     }
 
     private fun stopWebServer() {
@@ -747,44 +748,53 @@ class MainActivity : AppCompatActivity() {
         runOnUiThread {
             val statusText = findViewById<TextView>(R.id.textStatus)
             val actionButton = findViewById<Button>(R.id.buttonStartServer)
+            val portButton = findViewById<Button>(R.id.buttonChangePort)
             val port = me.bechberger.phoneserver.manager.ServerSettings.getPort(this)
 
-            if (isServerRunning) {
-                statusText.text = "AI Phone Server is running on port $port (tap to change)"
-                actionButton.text = "Stop Server :$port"
-            } else {
-                statusText.text = "AI Phone Server is stopped (port $port — tap to change)"
-                actionButton.text = "Start Server :$port"
-            }
+            portButton.text = ":$port"
+            portButton.setOnClickListener { showPortChangeDialog() }
 
-            statusText.setOnClickListener { showPortChangeDialog() }
+            if (isServerRunning) {
+                statusText.text = "AI Phone Server is running"
+                actionButton.text = "Stop Server"
+            } else {
+                statusText.text = "AI Phone Server is stopped"
+                actionButton.text = "Start Server"
+            }
         }
     }
 
     private fun showPortChangeDialog() {
-        val port = me.bechberger.phoneserver.manager.ServerSettings.getPort(this)
+        val currentPort = me.bechberger.phoneserver.manager.ServerSettings.getPort(this)
         val input = android.widget.EditText(this).apply {
             inputType = android.text.InputType.TYPE_CLASS_NUMBER
-            setText(port.toString())
+            setText(currentPort.toString())
             selectAll()
         }
         AlertDialog.Builder(this)
             .setTitle("Change Server Port")
-            .setMessage("Enter port number (1024–65535).\nRestart the server to apply.")
+            .setMessage("Enter port number (1024–65535).")
             .setView(input)
-            .setPositiveButton("Save") { _, _ ->
+            .setPositiveButton("Save & Restart") { _, _ ->
                 val newPort = input.text.toString().toIntOrNull()
                 if (newPort == null || newPort < 1024 || newPort > 65535) {
                     Toast.makeText(this, "Invalid port — must be 1024–65535", Toast.LENGTH_SHORT).show()
                     return@setPositiveButton
                 }
-                if (!me.bechberger.phoneserver.manager.ServerSettings.isPortAvailable(newPort)) {
+                // Only check availability if it's a different port than currently used
+                if (newPort != currentPort && !me.bechberger.phoneserver.manager.ServerSettings.isPortAvailable(newPort)) {
                     Toast.makeText(this, "Port $newPort is already in use by another app", Toast.LENGTH_LONG).show()
                     return@setPositiveButton
                 }
                 me.bechberger.phoneserver.manager.ServerSettings.setPort(this, newPort)
-                Toast.makeText(this, "Port set to $newPort — restart the server to apply", Toast.LENGTH_LONG).show()
                 updateUI()
+                // Restart server if running
+                if (isServerRunning) {
+                    stopWebServer()
+                    android.os.Handler(mainLooper).postDelayed({ startWebServer() }, 500)
+                } else {
+                    Toast.makeText(this, "Port set to $newPort", Toast.LENGTH_SHORT).show()
+                }
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -1168,12 +1178,48 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.buttonTestObjectDetectionRear).setOnClickListener {
             testObjectDetectionEndpoint("rear")
         }
-        
+
         // Test Object Detection (Front Camera)
         findViewById<Button>(R.id.buttonTestObjectDetectionFront).setOnClickListener {
             testObjectDetectionEndpoint("front")
         }
-        
+
+        // OpenAI-compatible: GET /v1/models
+        findViewById<Button>(R.id.buttonTestV1Models).setOnClickListener {
+            if (!isServerRunning) {
+                showApiResponse("Server ist nicht gestartet.")
+                return@setOnClickListener
+            }
+            lifecycleScope.launch {
+                showApiResponse("GET /v1/models… ⏳")
+                val result = apiTester.testEndpoint("/v1/models")
+                runOnUiThread { showApiResult(result) }
+            }
+        }
+
+        // OpenAI-compatible: POST /v1/chat/completions (Hello-World-Test)
+        findViewById<Button>(R.id.buttonTestChatCompletions).setOnClickListener {
+            if (!isServerRunning) {
+                showApiResponse("Server ist nicht gestartet.")
+                return@setOnClickListener
+            }
+            lifecycleScope.launch {
+                // Pick first available model for the test
+                val modelId = withContext(Dispatchers.IO) {
+                    me.bechberger.phoneserver.ai.AIModelRegistry.getReadyModels(this@MainActivity)
+                        .firstOrNull()?.id
+                }
+                if (modelId == null) {
+                    runOnUiThread { showApiResponse("Kein Modell verfügbar. Bitte erst ein Modell importieren.") }
+                    return@launch
+                }
+                showApiResponse("POST /v1/chat/completions ($modelId)… ⏳")
+                val body = """{"model":"$modelId","messages":[{"role":"user","content":"Say hi in one sentence."}],"stream":false}"""
+                val result = apiTester.testPostEndpoint("/v1/chat/completions", body)
+                runOnUiThread { showApiResult(result) }
+            }
+        }
+
         // Update the button text based on available models
         updateAIModelsButtonText()
     }

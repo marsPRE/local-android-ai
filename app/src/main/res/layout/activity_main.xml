@@ -32,13 +32,29 @@
                 android:text="Web server providing location, camera and AI services for other app and Linux Terminal apps"
                 android:textSize="14sp" />
 
-            <Button
-                android:id="@+id/buttonStartServer"
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="8dp"
-                android:text="Start Server"
-                android:textSize="18sp" />
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/buttonStartServer"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Start Server"
+                    android:textSize="18sp" />
+
+                <Button
+                    android:id="@+id/buttonChangePort"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text=":8005"
+                    android:textSize="14sp" />
+
+            </LinearLayout>
 
             <!-- AI Model Management -->
             <include
@@ -249,6 +265,45 @@
                         android:layout_weight="1"
                         android:text="🎯 Object Detection (Front)"
                         android:textSize="10sp" />
+
+                </LinearLayout>
+
+                <!-- OpenAI-compatible endpoints -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:layout_marginBottom="4dp"
+                    android:text="OpenAI-compatible"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    android:textColor="#555555" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="8dp"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/buttonTestV1Models"
+                        style="@style/Widget.Material3.Button.OutlinedButton"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginEnd="4dp"
+                        android:layout_weight="1"
+                        android:text="/v1/models"
+                        android:textSize="12sp" />
+
+                    <Button
+                        android:id="@+id/buttonTestChatCompletions"
+                        style="@style/Widget.Material3.Button.OutlinedButton"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="4dp"
+                        android:layout_weight="1"
+                        android:text="/v1/chat"
+                        android:textSize="12sp" />
 
                 </LinearLayout>
 
