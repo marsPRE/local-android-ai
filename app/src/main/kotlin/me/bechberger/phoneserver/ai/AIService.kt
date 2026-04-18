@@ -292,11 +292,22 @@ class AIService(private val context: Context) {
                     throw AIServiceException("AI inference failed for model ${model.modelName}: ${e.message}. This may be due to insufficient memory, corrupted model file, or MediaPipe runtime issues.")
                 }
                 
+                // For large models (>2 GB file), release the engine immediately after inference
+                // to prevent the OOM-kill that otherwise follows keeping a 4B+ model in RAM.
+                val modelFile = ModelDetector.getModelFile(context, model)
+                if (modelFile != null && modelFile.length() > 2L * 1024 * 1024 * 1024) {
+                    Timber.i("Large model (${formatBytes(modelFile.length())}) — releasing engine after inference to free RAM")
+                    currentInferenceService?.close()
+                    currentInferenceService = null
+                    currentModel = null
+                    System.gc()
+                }
+
                 // Handle image capture if returnImage is requested
                 if (request.returnImage) {
                     return@withContext addImageToResponse(result, request.imageScaling)
                 }
-                
+
                 result
                 
             } catch (e: ModelNotDownloadedException) {
